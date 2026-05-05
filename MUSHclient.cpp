@@ -21,18 +21,18 @@
 #include "winplace.h"
 #include "StatLink.h"
 
-#include "dialogs\welcome.h"
-#include "dialogs\welcome1.h"
+#include "dialogs/welcome.h"
+#include "dialogs/welcome1.h"
 
-#include "dialogs\TipDlg.h"
-#include "dialogs\CreditsDlg.h"
-#include "dialogs\ColourPickerDlg.h"
+#include "dialogs/TipDlg.h"
+#include "dialogs/CreditsDlg.h"
+#include "dialogs/ColourPickerDlg.h"
 
-#include "dialogs\Splash.h"
+#include "dialogs/Splash.h"
 #include "direct.h"
 extern "C" 
   {
-  #include "scripting\number.h"
+  #include "scripting/number.h"
   void bc_free_numbers ();
   }
 

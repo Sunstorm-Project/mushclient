@@ -3,13 +3,13 @@
 //  See lua_scripting.cpp for Lua-related scripting
 
 #include "stdafx.h"
-#include "..\mainfrm.h"
-#include "..\MUSHclient.h"
+#include "../mainfrm.h"
+#include "../MUSHclient.h"
 #include <process.h>    
 
-#include "..\doc.h"
-#include "..\dialogs\ImmediateDlg.h"
-#include "..\dialogs\world_prefs\MissingEntryPoints.h"
+#include "../doc.h"
+#include "../dialogs/ImmediateDlg.h"
+#include "../dialogs/world_prefs/MissingEntryPoints.h"
 
 #ifdef _DEBUG
 #undef THIS_FILE

@@ -7,7 +7,7 @@
 
 #include "doc.h"
 #include "genprint.h"
-#include "dialogs\QuickConnectDlg.h"
+#include "dialogs/QuickConnectDlg.h"
 #include "UDPsocket.h"
 
 extern int gdoccount;

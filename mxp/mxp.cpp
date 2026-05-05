@@ -1,9 +1,9 @@
 // mxp.cpp - MXP management
 
 #include "stdafx.h"
-#include "..\MUSHclient.h"
+#include "../MUSHclient.h"
 
-#include "..\doc.h"
+#include "../doc.h"
 #include "mxp.h"
 
 #ifdef _DEBUG

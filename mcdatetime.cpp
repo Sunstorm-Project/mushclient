@@ -5,6 +5,7 @@
 
 
 #include "stdafx.h"
+#include "mcdatetime.h"
 
 #define MIN_DATE                0  // year 1800
 #define MAX_DATE                2958465L    // about year 9999

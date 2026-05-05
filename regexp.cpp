@@ -3,10 +3,10 @@
 #include "stdafx.h"
 #include "MUSHclient.h"
 #include "doc.h"
-#include "dialogs\RegexpProblemDlg.h"
-#include "pcre\config.h"
-#include "pcre\pcre.h"
-#include "pcre\pcre_internal.h"
+#include "dialogs/RegexpProblemDlg.h"
+#include "pcre/config.h"
+#include "pcre/pcre.h"
+#include "pcre/pcre_internal.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW

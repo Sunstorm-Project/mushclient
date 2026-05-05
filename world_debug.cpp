@@ -5,7 +5,7 @@
 #include "stdafx.h"
 #include "MUSHclient.h"
 #include "doc.h"
-#include "mxp\mxp.h"
+#include "mxp/mxp.h"
 #include "sendvw.h"
 #include "Color.h"
 #include "childfrm.h"

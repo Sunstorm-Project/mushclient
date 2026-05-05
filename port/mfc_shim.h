@@ -39,6 +39,21 @@
 #ifndef MFC_SHIM_H
 #define MFC_SHIM_H
 
+// Sentinel that other port-aware headers (MUSHclient.h, doc.h, etc.)
+// check via #ifdef __SPARC_SOLARIS7_PORT__ to elide their Win32-only
+// content. Defined here so any TU that includes the shim
+// transitively gets it.
+#ifndef __SPARC_SOLARIS7_PORT__
+#define __SPARC_SOLARIS7_PORT__ 1
+#endif
+
+// Win32-only headers some MUSHclient sources pull in directly. Map
+// them to POSIX equivalents via this shim — no need to litter the
+// downstream sources with #ifdefs.
+#define process_h_shim_loaded 1
+#define _getpid getpid
+#include <unistd.h>     // getpid + friends, replaces <process.h>
+
 #include <cassert>
 #include <cstdarg>
 #include <cstddef>
@@ -53,6 +68,15 @@
 #include <vector>
 #include <map>
 #include <list>
+#include <algorithm>
+
+// MFC's afx.h leaks ::min and ::max as macros so unqualified `min(a,b)`
+// in MUSHclient sources compiles. We can't use macros without breaking
+// std::min/std::max calls in headers we include below, so expose the
+// std versions via using-declarations at global scope. Mirror MFC's
+// behaviour without the preprocessor footgun.
+using std::min;
+using std::max;
 
 // ─────────────────────────────────────────────────────────────────────
 // Win32 type aliases (the subset actually referenced in MUSHclient
@@ -321,6 +345,27 @@ public:
     // have those; return FALSE so callers fall through to the constant
     // string they already have inline.
     BOOL LoadString(UINT /*id*/) { return FALSE; }
+
+    // Insert / Delete — direct char-position editing
+    int Insert(int pos, const char * s) {
+        if (!s) return GetLength();
+        if (pos < 0) pos = 0;
+        if (static_cast<std::size_t>(pos) > m_str.size()) pos = static_cast<int>(m_str.size());
+        m_str.insert(static_cast<std::size_t>(pos), s);
+        return GetLength();
+    }
+    int Insert(int pos, char ch) {
+        if (pos < 0) pos = 0;
+        if (static_cast<std::size_t>(pos) > m_str.size()) pos = static_cast<int>(m_str.size());
+        m_str.insert(m_str.begin() + pos, ch);
+        return GetLength();
+    }
+    int Delete(int pos, int count = 1) {
+        if (pos < 0 || static_cast<std::size_t>(pos) >= m_str.size()) return GetLength();
+        if (count < 0) count = 0;
+        m_str.erase(static_cast<std::size_t>(pos), static_cast<std::size_t>(count));
+        return GetLength();
+    }
 
     // Concatenation
     CString & operator+=(const CString & rhs) { m_str += rhs.m_str; return *this; }
@@ -601,9 +646,78 @@ inline class CWinApp * AfxGetApp()      { return nullptr; }
 inline HWND  AfxGetMainWnd()            { return nullptr; }
 inline HINSTANCE AfxGetInstanceHandle() { return nullptr; }
 
-// CWinApp forward decl so AfxGetApp() can be used in headers that
-// include this shim before the application header.
-class CWinApp;
+// CWinApp / CWnd / CCmdTarget — empty bases so MUSHclient.h's
+// `class CMUSHclientApp : public CWinApp` compiles. The real
+// application logic lands on the wxWidgets-shell adapter; here we
+// just need the inheritance chain to type-check so the data-bearing
+// .cpp files (doc.cpp, plugins.cpp, scripting/) compile.
+
+class CCmdTarget : public CObject {};
+class CWinThread : public CCmdTarget {};
+class CWinApp    : public CWinThread {
+public:
+    CWinApp(const char * /*name*/ = nullptr) {}
+    HINSTANCE m_hInstance{nullptr};
+    LPCSTR    m_lpCmdLine{nullptr};
+    int       m_nCmdShow{0};
+    virtual BOOL InitInstance()  { return TRUE; }
+    virtual int  ExitInstance()  { return 0; }
+    virtual int  Run()           { return 0; }
+    virtual BOOL OnIdle(LONG /*lCount*/) { return FALSE; }
+};
+
+// CWnd / CView / CDialog / CDocument — minimal placeholders so the
+// MUSHclient.h declarations type-check. The corresponding .cpp files
+// are on the DELETE list (replaced with wxWidgets) and never reach
+// the cross-compiler in real builds; this only matters for headers.
+class CWnd       : public CCmdTarget {};
+class CFrameWnd  : public CWnd {};
+class CMDIChildWnd : public CFrameWnd {};
+class CMDIFrameWnd : public CFrameWnd {};
+class CDialog    : public CWnd {};
+class CDocument  : public CCmdTarget {};
+class CView      : public CWnd {};
+class CScrollView: public CView {};
+class CFormView  : public CView {};
+class CCmdUI     : public CObject {};
+class CRuntimeClass {};
+class CSocket : public CObject {};
+class CAsyncSocket : public CObject {};
+class CCriticalSection {
+public:
+    void Lock() {}
+    void Unlock() {}
+};
+
+// CFormat is defined IN-TREE at format.cpp/format.h — we just need
+// a forward decl here since some headers reference it. Likewise
+// CSystemException at exceptions.cpp/exceptions.h.
+class CFormat;
+class CSystemException;
+
+// MSG — Win32 message struct. PreTranslateMessage references it in
+// every CWnd-derived class declaration. The MUSHclient port deletes
+// all CWnd subclasses, so the parameter type just needs to exist.
+struct MSG {
+    HWND  hwnd;
+    UINT  message;
+    DWORD wParam;
+    LONG  lParam;
+    DWORD time;
+    LONG  pt_x;
+    LONG  pt_y;
+};
+
+// POINT / RECT / SIZE — Win32 POD geometry siblings of CPoint/CRect/CSize.
+struct POINT { LONG x; LONG y; };
+struct RECT  { LONG left; LONG top; LONG right; LONG bottom; };
+struct SIZE  { LONG cx; LONG cy; };
+
+// LARGE_INTEGER — used for high-resolution timers in a couple of files.
+union LARGE_INTEGER {
+    struct { DWORD LowPart; LONG HighPart; };
+    LONGLONG QuadPart;
+};
 
 // ─────────────────────────────────────────────────────────────────────
 // CFile / CStdioFile — minimal wrapper around fopen/fclose. CArchive

@@ -14,26 +14,26 @@
 #include "sendvw.h"
 #include "TextView.h"
 #include "TextDocument.h"
-#include "dialogs\ChooseNotepadDlg.h"
-#include "dialogs\DebugWorldInputDlg.h"
-#include "dialogs\ImportXMLdlg.h"
-#include "dialogs\plugins\PluginsDlg.h"
-#include "dialogs\KeyNameDlg.h"
+#include "dialogs/ChooseNotepadDlg.h"
+#include "dialogs/DebugWorldInputDlg.h"
+#include "dialogs/ImportXMLdlg.h"
+#include "dialogs/plugins/PluginsDlg.h"
+#include "dialogs/KeyNameDlg.h"
 
-#include "dialogs\logdlg.h"   // for logging session
-#include "dialogs\RecallSearchDlg.h"
-#include "dialogs\chat\ChatListDlg.h"
+#include "dialogs/logdlg.h"   // for logging session
+#include "dialogs/RecallSearchDlg.h"
+#include "dialogs/chat/ChatListDlg.h"
 
-#include "dialogs\world_prefs\PrefsPropertySheet.h"
+#include "dialogs/world_prefs/PrefsPropertySheet.h"
 
-#include "dialogs\password.h"
+#include "dialogs/password.h"
 
 #include "ActivityDoc.h"
-#include "dialogs\ConfirmPreamble.h"
+#include "dialogs/ConfirmPreamble.h"
 
-#include "dialogs\ProgDlg.h"
+#include "dialogs/ProgDlg.h"
 #include "genprint.h"
-#include "scripting\errors.h"
+#include "scripting/errors.h"
 #include "flags.h"
 
 #include "png/png.h"  // for version

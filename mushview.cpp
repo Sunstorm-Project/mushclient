@@ -14,11 +14,11 @@
 
 #include "ActivityDoc.h"
 #include "genprint.h"
-#include "dialogs\TextAttributesDlg.h"
-#include "dialogs\GoToLineDlg.h"
-#include "dialogs\HighlightPhraseDlg.h"
-#include "dialogs\MultiLineTriggerDlg.h"
-#include "scripting\errors.h"
+#include "dialogs/TextAttributesDlg.h"
+#include "dialogs/GoToLineDlg.h"
+#include "dialogs/HighlightPhraseDlg.h"
+#include "dialogs/MultiLineTriggerDlg.h"
+#include "scripting/errors.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW

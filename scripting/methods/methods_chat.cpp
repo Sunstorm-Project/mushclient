@@ -3,11 +3,11 @@
 // Stuff for the chat system
 
 #include "stdafx.h"
-#include "..\..\MUSHclient.h"
-#include "..\..\doc.h"
-#include "..\..\MUSHview.h"
-#include "..\..\mainfrm.h"
-#include "..\errors.h"
+#include "../../MUSHclient.h"
+#include "../../doc.h"
+#include "../../MUSHview.h"
+#include "../../mainfrm.h"
+#include "../errors.h"
 
 // Implements:
 

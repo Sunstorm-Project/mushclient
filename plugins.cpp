@@ -6,7 +6,7 @@
 #include "MUSHclient.h"
 
 #include "doc.h"
-#include "dialogs\plugins\PluginWizardSheet.h"
+#include "dialogs/plugins/PluginWizardSheet.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW

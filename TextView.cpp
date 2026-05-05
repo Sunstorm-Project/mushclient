@@ -19,8 +19,8 @@ Copyright (C) 2000 Nick Gammon.
   #include <../src/afximpl.h>
 #endif
 
-#include "dialogs\GoToLineDlg.h"
-#include "dialogs\LuaGsubDlg.h"
+#include "dialogs/GoToLineDlg.h"
+#include "dialogs/LuaGsubDlg.h"
 
 #pragma warning( disable : 4100)  // unreferenced formal parameter
 

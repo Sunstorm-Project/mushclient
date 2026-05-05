@@ -18,7 +18,7 @@
 
 #define PCRE_EXP_DECL extern
 
-#include "pcre\pcre.h"
+#include "pcre/pcre.h"
                  
 // compiled regular expression type
 

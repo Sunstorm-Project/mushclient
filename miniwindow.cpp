@@ -6,13 +6,13 @@
 #include "MUSHclient.h"
 #include "doc.h"
 #include "MUSHview.h"
-#include "scripting\errors.h"
+#include "scripting/errors.h"
 #include "color.h"
 #include "mainfrm.h"
 #include "blending.h"
 
 #define PNG_NO_CONSOLE_IO
-#include "png\png.h"
+#include "png/png.h"
 
 // constructor
 CMiniWindow::CMiniWindow ()  :

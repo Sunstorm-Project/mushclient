@@ -1,11 +1,11 @@
 // mxpEntities.cpp - MXP entities
 
 #include "stdafx.h"
-#include "..\MUSHclient.h"
+#include "../MUSHclient.h"
 
-#include "..\doc.h"
-#include "..\MUSHview.h"
-#include "..\mainfrm.h"
+#include "../doc.h"
+#include "../MUSHview.h"
+#include "../mainfrm.h"
 #include "mxp.h"
 
 #ifdef _DEBUG

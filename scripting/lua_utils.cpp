@@ -40,17 +40,17 @@
 // Also see: lua_compress.c  for some more utils.xxx functions
 
 #include "stdafx.h"
-#include "..\mainfrm.h"
-#include "..\MUSHclient.h"
-#include "..\doc.h"
-#include "..\dialogs\LuaInputBox.h"
-#include "..\dialogs\LuaInputEditDlg.h"
-#include "..\dialogs\SpellCheckDlg.h"
-#include "..\dialogs\LuaChooseBox.h"
-#include "..\dialogs\LuaChooseList.h"
-#include "..\dialogs\LuaChooseListMulti.h"
-#include "..\dialogs\FunctionListDlg.h"
-#include "..\dmetaph.h"
+#include "../mainfrm.h"
+#include "../MUSHclient.h"
+#include "../doc.h"
+#include "../dialogs/LuaInputBox.h"
+#include "../dialogs/LuaInputEditDlg.h"
+#include "../dialogs/SpellCheckDlg.h"
+#include "../dialogs/LuaChooseBox.h"
+#include "../dialogs/LuaChooseList.h"
+#include "../dialogs/LuaChooseListMulti.h"
+#include "../dialogs/FunctionListDlg.h"
+#include "../dmetaph.h"
 #include <direct.h>
 #include <wingdi.h>
 
@@ -1108,7 +1108,7 @@ unsigned char utf8 [10];    // UTF-8 should be max 6 characters
 
 // convert the supplied string into UTF-8
 
-// / print (utils.utf8convert ("^You put (.*?) (.*?) FaetorAde ® into a Bag of Aardwolf\.$"))
+// / print (utils.utf8convert ("^You put (.*?) (.*?) FaetorAde ï¿½ into a Bag of Aardwolf\.$"))
 
 static int utf8convert (lua_State *L) {
   const unsigned char * s = (const unsigned char *) luaL_checkstring (L, 1);
@@ -1714,7 +1714,7 @@ static int shell_execute (lua_State *L)
       err = "The specified path was not found."; 
       break;
     case ERROR_BAD_FORMAT : 
-      err = "The .exe file is invalid (non-Win32® .exe or error in .exe image)."; 
+      err = "The .exe file is invalid (non-Win32ï¿½ .exe or error in .exe image)."; 
       break;
     case SE_ERR_ACCESSDENIED : 
       err = "The operating system denied access to the specified file."; 

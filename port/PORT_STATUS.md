@@ -147,6 +147,51 @@ NOT YET CLASSIFIED:
 * `spell/*.cpp` — spellcheck. Likely DELETE (use hunspell directly
   if needed; the scripting/ directory may already integrate it).
 
+## Compile pass / fail tally (top-level KEEP+SHIM .cpp files, as of 2026-05-05 16:30)
+
+Shim covers: CString (full), CTime/CTimeSpan, CRect/CPoint/CSize,
+CObject/CException/CFileException/CMemoryException/CSystemException
+(forward decl), CFile/CStdioFile, CMapBase/CList, CWinApp/CCmdTarget/CWnd
+/CView/CDocument/CDialog/CFrameWnd/CMDIChildWnd/CMDIFrameWnd/CCmdUI
+(empty bases for inheritance), MSG/POINT/RECT/SIZE/LARGE_INTEGER PODs,
+CSocket/CAsyncSocket (empty), CCriticalSection (empty Lock/Unlock),
+CRuntimeClass (empty), CFormat (forward decl).
+
+Plus: process.h shim → unistd.h, `_getpid` → `getpid`.
+
+PASSING (3): Color.cpp, Dmetaph.cpp, Replace.cpp.
+
+FAILING — categorized by shim gap:
+
+* **CMultiDocTemplate undefined** in MUSHclient.h: ansi.cpp, Finding.cpp,
+  NameGeneration.cpp, ProcessPreviousLine.cpp, Line.cpp, evaluate.cpp,
+  regexp.cpp, telnet_phases.cpp, timers.cpp, world_debug.cpp, serialize.cpp.
+  Fix: add `class CMultiDocTemplate {};` to the shim.
+
+* **CFormat incomplete in format.cpp**: format.cpp's `CFormat::CFormat(...)`
+  defines methods on a class that's only forward-declared in the shim.
+  Fix: `#include "format.h"` first, OR move CFormat definition into the
+  shim (it's just a CString-derived varargs ctor anyway, see prior commit
+  attempt).
+
+* **CSystemException incomplete in exceptions.cpp**: same pattern. Fix: same.
+
+* **<direct.h> missing** in Utilities.cpp:3339. Fix: shim that maps to
+  unistd.h/sys/stat.h. Most uses are `_chdir`, `_mkdir`, `_getcwd` →
+  `chdir`, `mkdir`, `getcwd`.
+
+* **COleDateTimeSpan missing** in mcdatetime.cpp:96. Fix: alias to
+  `CmcDateTimeSpan` (since COleDateTime semantics are the same kind
+  of double-encoded date).
+
+* **mcdatetime.cpp also needed `#include "mcdatetime.h"`** explicitly —
+  fixed in-place.
+
+The pattern is clear: each compile pass surfaces ~3-5 missing types.
+Add them to the shim, retry, repeat. Estimated 2-4 more iteration
+rounds to clear the top-level KEEP+SHIM list of 18 files. Then on to
+scripting/, mxp/, names/, plugins.cpp, doc.cpp, doc_construct.cpp.
+
 ## Known port issues already surfaced
 
 1. **Backslash include paths in MUSHclient.h**:

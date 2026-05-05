@@ -5,7 +5,7 @@
 
 #include "doc.h"
 #include "MUSHview.h"
-#include "scripting\errors.h"
+#include "scripting/errors.h"
 
 #define NL "\r\n"
 

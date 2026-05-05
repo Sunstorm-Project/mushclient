@@ -3,15 +3,15 @@
 // General "information" methods
 
 #include "stdafx.h"
-#include "..\..\MUSHclient.h"
-#include "..\..\doc.h"
-#include "..\..\MUSHview.h"
-#include "..\..\mainfrm.h"
-#include "..\..\childfrm.h"
-#include "..\..\sendvw.h"
-#include "..\..\winplace.h"
-#include "..\..\png\png.h"
-#include "..\errors.h"
+#include "../../MUSHclient.h"
+#include "../../doc.h"
+#include "../../MUSHview.h"
+#include "../../mainfrm.h"
+#include "../../childfrm.h"
+#include "../../sendvw.h"
+#include "../../winplace.h"
+#include "../../png/png.h"
+#include "../errors.h"
 #include <direct.h>
 
 // Implements:

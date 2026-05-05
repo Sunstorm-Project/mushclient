@@ -15,13 +15,13 @@
 
 #include "winplace.h"
 
-#include "dialogs\Splash.h"
+#include "dialogs/Splash.h"
 
 
-#include "dialogs\TipDlg.h"
-#include "dialogs\SendToAllDlg.h"
-#include "dialogs\UniqueIDDlg.h"
-#include "dialogs\WinsockInfoDlg.h"
+#include "dialogs/TipDlg.h"
+#include "dialogs/SendToAllDlg.h"
+#include "dialogs/UniqueIDDlg.h"
+#include "dialogs/WinsockInfoDlg.h"
 
 #include "MakeWindowTransparent.h"
 

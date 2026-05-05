@@ -3,19 +3,41 @@
 
 #pragma once
 
-#ifndef __AFXWIN_H__
-	#error include 'stdafx.h' before including this file for PCH
+// SPARC Solaris 7 port: the original guard required <afx.h> via stdafx.h
+// before this header. With the port-aware stdafx.h pulling
+// port/mfc_shim.h instead of MFC, that guard is irrelevant — drop it.
+//
+// resource.h is the MFC resource-table header; the port doesn't ship a
+// .rc file, so we replace it with a tiny stub of the resource IDs that
+// non-GUI sources reference (mostly nothing — IDR_*/IDC_* are used in
+// dialogs/ which is being deleted entirely).
+//
+// hostsite.h hosts IActiveScriptSite (WSH/VBScript). The port drops WSH
+// in favour of Lua-only scripting; skip the include.
+//
+// mmsystem.h / dsound.h are Win32-only; sound playback gets rewritten
+// over SDL2_mixer at the wxWidgets-shell layer.
+
+#ifdef __SPARC_SOLARIS7_PORT__
+  // Port build: nothing further to include here. Files that need
+  // CMUSHclientApp etc. will reach for it via the wxWidgets-shell
+  // adapter once that layer lands.
+#else
+  // Original Windows build path.
+  #ifndef __AFXWIN_H__
+  	#error include 'stdafx.h' before including this file for PCH
+  #endif
+
+  #include "resource.h"       // main symbols
+  #include "hostsite.h"
+  #include "scripting/scripting.h"
+  #include "othertypes.h"
+
+  #define DIRECTSOUND_VERSION 5
+
+  #include <mmsystem.h>
+  #include <dsound.h>
 #endif
-
-#include "resource.h"       // main symbols
-#include "hostsite.h"
-#include "scripting\scripting.h"
-#include "othertypes.h"
-
-#define DIRECTSOUND_VERSION 5
-
-#include <mmsystem.h>
-#include <dsound.h>
 
 /////////////////////////////////////////////////////////////////////////////
 // CMUSHclientApp:

@@ -12,13 +12,13 @@
 #include "mainfrm.h"
 #include "color.h"
 
-#include "scripting\errors.h"
+#include "scripting/errors.h"
 
-#include "pcre\config.h"
-#include "pcre\pcre_internal.h"
+#include "pcre/config.h"
+#include "pcre/pcre_internal.h"
 
 #define PNG_NO_CONSOLE_IO
-#include "png\png.h"
+#include "png/png.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW

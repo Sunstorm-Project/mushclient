@@ -3,10 +3,10 @@
 // Related to timers (and DoAfter, stuff like that)
 
 #include "stdafx.h"
-#include "..\..\MUSHclient.h"
-#include "..\..\doc.h"
-#include "..\..\flags.h"
-#include "..\errors.h"
+#include "../../MUSHclient.h"
+#include "../../doc.h"
+#include "../../flags.h"
+#include "../errors.h"
 
 // Implements:
 
