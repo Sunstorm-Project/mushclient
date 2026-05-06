@@ -265,14 +265,15 @@ packages/mushclient/
 `build.sh` will pull from the Sunstorm-Project fork (when we make it)
 rather than upstream nickgammon, to keep the port tree under our control.
 
-## Org / repo strategy (open question)
+## Org / repo strategy
 
-The mushclient checkout under
-`~/Documents/Projects/source/mushclient` is a clone of nickgammon's repo.
-Once the port has bones (this commit), fork to
-`Sunstorm-Project/mushclient` and push from there. The port branch
-naming convention from sst-build-pipeline (`feat/qt6-mudlet`, etc.) would
-suggest `feat/sparc-port` or just `main` on the fork.
+Forked to **Sunstorm-Project/mushclient** (2026-05-05). Port work lives
+on **`feat/sparc-solaris7-port`**. `master` mirrors nickgammon/mushclient
+upstream so we can cherry-pick future upstream commits cleanly.
+
+Local clone at `~/Documents/Projects/source/mushclient`:
+- `origin`   → Sunstorm-Project/mushclient (push target)
+- `upstream` → nickgammon/mushclient (read-only)
 
 ## Estimate
 
