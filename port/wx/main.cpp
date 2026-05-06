@@ -21,21 +21,22 @@
 #include <wx/scrolwin.h>
 #include <wx/socket.h>
 #include <wx/textdlg.h>
-#include <wx/univ/theme.h>
 #include <string>
 
+#ifdef __WXUNIVERSAL__
 // Force-link wxUniversal themes. Without these, the static archive
 // `libwx_x11univu-3.0.a` carries the theme classes but no theme .o
 // is referenced from app code, so the linker drops them and
 // wxTheme::CreateDefault() reports "no built-in themes found" (see
 // the comment on WX_USE_THEME in wx/univ/theme.h: "without it, an
 // over optimizing linker may discard the object module containing
-// the theme implementation entirely").
+// the theme implementation entirely"). On the Motif build wx uses
+// native libXm widgets directly — no theme registration needed.
+#include <wx/univ/theme.h>
 WX_USE_THEME(win32);
 WX_USE_THEME(gtk);
 WX_USE_THEME(mono);
-// metal is a delegate over win32 with darker borders — pulled in
-// transitively, no force-link needed.
+#endif
 
 #include <cstddef>
 #include <cstdlib>
@@ -54,19 +55,32 @@ struct AnsiSpan {
     bool     bold;
 };
 
-// Standard ANSI palette, indexed by code 30-37 (foreground) — dim
-// row for non-bold, bright row for bold.
+// Standard ANSI palette, indexed by code 30-37 (foreground).
+// Use full-saturation colours rather than the more subtle 0xAA
+// half-strengths because the Solaris 7 framebuffer is 8-bit
+// PseudoColor on TCX — wx's nearest-colormap-entry allocation
+// for any non-primary RGB triple often falls back to black or
+// near-black, making text invisible. Pure 0xFF / 0x00 channels
+// are guaranteed to map to the static-colour entries the X11
+// server installs at Xsun startup.
 static wxColour AnsiPaletteColour(int idx, bool bold) {
-    static const unsigned char dim[8][3] = {
-        {0x00,0x00,0x00}, {0xAA,0x00,0x00}, {0x00,0xAA,0x00}, {0xAA,0x55,0x00},
-        {0x00,0x00,0xAA}, {0xAA,0x00,0xAA}, {0x00,0xAA,0xAA}, {0xAA,0xAA,0xAA},
-    };
-    static const unsigned char bri[8][3] = {
-        {0x55,0x55,0x55}, {0xFF,0x55,0x55}, {0x55,0xFF,0x55}, {0xFF,0xFF,0x55},
-        {0x55,0x55,0xFF}, {0xFF,0x55,0xFF}, {0x55,0xFF,0xFF}, {0xFF,0xFF,0xFF},
+    static const unsigned char palette[8][3] = {
+        {0x00,0x00,0x00}, // 0 black
+        {0xFF,0x00,0x00}, // 1 red
+        {0x00,0xFF,0x00}, // 2 green
+        {0xFF,0xFF,0x00}, // 3 yellow
+        {0x00,0x00,0xFF}, // 4 blue
+        {0xFF,0x00,0xFF}, // 5 magenta
+        {0x00,0xFF,0xFF}, // 6 cyan
+        {0xFF,0xFF,0xFF}, // 7 white
     };
     if (idx < 0 || idx > 7) idx = 7;
-    const unsigned char * p = bold ? bri[idx] : dim[idx];
+    // BLACK on a black background would be invisible. Bump to grey
+    // — but on 8-bit PseudoColor, grey is risky too; use pale yellow
+    // which has reliably-allocated palette entries on Xsun.
+    if (idx == 0) return bold ? wxColour(0xC0, 0xC0, 0xC0)
+                              : wxColour(0x80, 0x80, 0x80);
+    const unsigned char * p = palette[idx];
     return wxColour(p[0], p[1], p[2]);
 }
 
@@ -145,6 +159,22 @@ public:
         }
     }
 
+    // Snapshot the in-progress line (m_curLine + any partial m_cur)
+    // for rendering as a "pending" line below the committed output.
+    // Used so MUD prompts and banner-without-trailing-newline are
+    // visible immediately, not held until the next \n.
+    std::vector<AnsiSpan> Pending() const {
+        std::vector<AnsiSpan> out = m_curLine;
+        if (!m_cur.empty()) {
+            AnsiSpan span;
+            span.text = wxString::FromUTF8(m_cur.c_str(), m_cur.size());
+            span.fg   = AnsiPaletteColour(m_fgIndex, m_bold);
+            span.bold = m_bold;
+            out.push_back(std::move(span));
+        }
+        return out;
+    }
+
 private:
     void Flush() {
         if (m_cur.empty()) return;
@@ -190,85 +220,65 @@ private:
 };
 
 // ─────────────────────────────────────────────────────────────────────
-// OutputPane — custom-drawn rolling-text window with per-span colour.
-// Each line is a vector<AnsiSpan>; OnPaint walks the visible range
-// and draws each span at the right x offset using its own foreground
-// colour. wxRichTextCtrl is avoided because wxX11/wxUniversal renders
-// it poorly.
+// ─────────────────────────────────────────────────────────────────────
+// OutputPane — wxTextCtrl-backed read-only view of MUD output.
+//
+// Empirical finding 2026-05-07: wxX11 / wxUniversal's wxPaintDC::
+// DrawText silently produces zero pixels for our custom-drawn pane
+// regardless of fg/bg/font/SetBackgroundMode/SetForegroundColour/
+// font-face/explicit-Courier/wxNORMAL_FONT/warm-up-DrawRectangle.
+// DrawRectangle on the same DC works fine. The wx widgets that
+// render text correctly (menubar / statusbar / dialogs / wxTextCtrl
+// itself) all go through the wxRenderer-based widget text path,
+// not the DC text path.
+//
+// So we back the OutputPane with a real wxTextCtrl. We lose per-
+// span colour rendering — wxTextCtrl can't multi-attribute text
+// without wxRichTextCtrl which the original handoff already
+// flagged as "renders poorly on wxX11". For a first usable MUD
+// client, plain monochrome MUD output is far better than the
+// invisible-everything we'd get from the DC path.
+//
+// AnsiSpan / SetPendingLine API stays so the parser → output
+// flow doesn't have to change. Per-span colour is flattened to
+// concatenated text.
 // ─────────────────────────────────────────────────────────────────────
 
-class OutputPane : public wxScrolledWindow {
+class OutputPane : public wxTextCtrl {
 public:
     OutputPane(wxWindow * parent)
-        : wxScrolledWindow(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize,
-                           wxVSCROLL | wxHSCROLL | wxBORDER_SUNKEN)
+        : wxTextCtrl(parent, wxID_ANY, wxEmptyString,
+                     wxDefaultPosition, wxDefaultSize,
+                     wxTE_READONLY | wxTE_MULTILINE |
+                     wxTE_DONTWRAP | wxBORDER_SUNKEN)
     {
-        SetBackgroundColour(wxColour(0, 0, 0));
-        m_font = wxFont(wxFontInfo(11).Family(wxFONTFAMILY_TELETYPE));
-        SetScrollbars(8, 14, 0, 0);
+        // Use system defaults (white bg, black text) for visibility.
+        // SetBackgroundColour on wxX11 wxTextCtrl doesn't recolour
+        // the text-area background — it's painted by the widget's
+        // own theme. Setting it black combined with default-black
+        // text would render invisibly. Keep default and let the
+        // user see something.
     }
 
-    // Plain-text convenience: build a single-span line in the default
-    // colour. Used for our local UI banners and command echoes.
     void AppendLine(const wxString & s) {
-        std::vector<AnsiSpan> line;
-        AnsiSpan span;
-        span.text = s;
-        span.fg   = wxColour(0xC0, 0xC0, 0xC0);
-        span.bold = false;
-        line.push_back(std::move(span));
-        AppendStyledLine(std::move(line));
+        AppendText(s);
+        AppendText(wxT("\n"));
+        SetInsertionPointEnd();   // auto-scroll
     }
 
     void AppendStyledLine(std::vector<AnsiSpan> && spans) {
-        m_lines.push_back(std::move(spans));
-        if (m_lines.size() > 5000) m_lines.erase(m_lines.begin());
-        SetVirtualSize(wxDefaultCoord,
-                       static_cast<int>(m_lines.size()) * LineHeight());
-        Refresh();
+        wxString line;
+        for (const AnsiSpan & span : spans) line += span.text;
+        AppendLine(line);
     }
 
-private:
-    int LineHeight() const { return 14; }
-
-    void OnPaint(wxPaintEvent &) {
-        wxPaintDC dc(this);
-        DoPrepareDC(dc);
-        dc.SetBackground(wxBrush(wxColour(0, 0, 0)));
-        dc.Clear();
-        dc.SetFont(m_font);
-        const int lh = LineHeight();
-
-        for (std::size_t i = 0; i < m_lines.size(); ++i) {
-            const auto & line = m_lines[i];
-            const int y = static_cast<int>(i) * lh + 1;
-            int x = 4;
-            for (const AnsiSpan & span : line) {
-                if (span.text.IsEmpty()) continue;
-                dc.SetTextForeground(span.fg);
-                if (span.bold) {
-                    wxFont bf = m_font;
-                    bf.MakeBold();
-                    dc.SetFont(bf);
-                } else {
-                    dc.SetFont(m_font);
-                }
-                dc.DrawText(span.text, x, y);
-                wxSize sz = dc.GetTextExtent(span.text);
-                x += sz.GetWidth();
-            }
-        }
-    }
-
-    std::vector<std::vector<AnsiSpan>> m_lines;
-    wxFont                              m_font;
-
-    wxDECLARE_EVENT_TABLE();
+    // wxTextCtrl can't render an "in-progress" line that gets
+    // replaced as bytes arrive. For now ignore the pending state;
+    // partial server output (no trailing \n) waits for the next \n
+    // to commit.
+    void SetPendingLine(std::vector<AnsiSpan> /*spans*/) {}
 };
 
-wxBEGIN_EVENT_TABLE(OutputPane, wxScrolledWindow)
-    EVT_PAINT(OutputPane::OnPaint)
-wxEND_EVENT_TABLE()
 
 // ─────────────────────────────────────────────────────────────────────
 // Frame — top-level window. Splitter divides output (top) from input
@@ -316,7 +326,7 @@ private:
         int widths[2] = { -3, -1 };
         sb->SetStatusWidths(2, widths);
         sb->SetStatusText(wxT("not connected"), 0);
-        sb->SetStatusText(wxT("v0.2-port"), 1);
+        sb->SetStatusText(wxT("v0.5-port"), 1);
     }
 
     void BuildSplit() {
@@ -330,10 +340,10 @@ private:
         split->SplitHorizontally(m_output, m_input, -120);
         split->SetMinimumPaneSize(60);
 
-        m_output->AppendLine(wxT("MUSHclient SPARC Solaris 7 port — v0.2 shell"));
-        m_output->AppendLine(wxT("File → Connect... to dial a MUD; lines you type"));
-        m_output->AppendLine(wxT("get sent. ANSI / triggers / aliases / scripting"));
-        m_output->AppendLine(wxT("are still TODO — this is a bring-up shell."));
+        m_output->AppendLine(wxT("MUSHclient SPARC Solaris 7 port — v0.5 shell"));
+        m_output->AppendLine(wxT("File -> Connect... to dial a MUD; lines you type"));
+        m_output->AppendLine(wxT("are sent to the server. ANSI colour / triggers /"));
+        m_output->AppendLine(wxT("aliases / scripting are still TODO — bring-up only."));
         m_output->AppendLine(wxEmptyString);
 
         m_input->SetFocus();
@@ -342,7 +352,7 @@ private:
     void OnQuit(wxCommandEvent &)  { Close(true); }
     void OnAbout(wxCommandEvent &) {
         wxMessageBox(wxT("MUSHclient SPARC Solaris 7 port\n"
-                         "wxWidgets/X11 shell — v0.2\n\n"
+                         "wxWidgets/X11 shell — v0.5\n\n"
                          "Connect / Disconnect via the File menu.\n"
                          "Lines from the server land in the output pane.\n"
                          "Lines you type in the input box go to the server.\n\n"
@@ -390,6 +400,7 @@ private:
         m_socket->SetEventHandler(*this, ID_Socket);
         m_socket->SetNotify(wxSOCKET_INPUT_FLAG | wxSOCKET_LOST_FLAG | wxSOCKET_CONNECTION_FLAG);
         m_socket->Notify(true);
+        m_parser = AnsiTelnetParser{};   // reset parser state per connection
 
         m_output->AppendLine(wxString::Format(wxT("Connecting to %s:%ld..."), host, port));
         m_socket->Connect(addr, false);  // async — events come back via OnSocketEvent
@@ -413,16 +424,21 @@ private:
                 UpdateStatus();
                 break;
             case wxSOCKET_INPUT: {
-                char buf[4096];
-                sock->Read(buf, sizeof(buf));
-                const std::size_t n = sock->LastCount();
-                if (n == 0) break;
-                // Feed bytes through the ANSI/IAC parser; emit a
-                // styled line (vector<AnsiSpan>) for each '\n' boundary.
-                m_parser.Feed(buf, n,
-                    [this](std::vector<AnsiSpan> && spans) {
-                        m_output->AppendStyledLine(std::move(spans));
-                    });
+                // Drain the socket recv buffer; wxSOCKET_INPUT only
+                // re-fires when MORE bytes arrive, so we have to
+                // pull everything currently available in one event.
+                for (;;) {
+                    char buf[4096];
+                    sock->Read(buf, sizeof(buf));
+                    const std::size_t n = sock->LastCount();
+                    if (n == 0) break;
+                    m_parser.Feed(buf, n,
+                        [this](std::vector<AnsiSpan> && spans) {
+                            m_output->AppendStyledLine(std::move(spans));
+                        });
+                    if (n < sizeof(buf)) break;
+                }
+                m_output->SetPendingLine(m_parser.Pending());
                 break;
             }
             case wxSOCKET_LOST:
@@ -625,8 +641,6 @@ public:
             std::fprintf(stderr, "[wx] base OnInit returned false\n");
             return false;
         }
-        // wxBase initialises wxSocket implicitly on first use, but
-        // calling it here explicitly makes the lifetime obvious.
         wxSocketBase::Initialize();
         std::fprintf(stderr, "[wx] base OnInit OK; creating MainFrame\n");
         MainFrame * f = new MainFrame();

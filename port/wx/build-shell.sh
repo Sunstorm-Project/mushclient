@@ -34,9 +34,13 @@ ensure_staged \
 # Stage wxWidgets's bin/wx-config — the symlink in the staging tarball
 # dangles (target = /opt/sst/lib/wx/config/<tuple>); we invoke the
 # real config script directly.
-WX_CONFIG_REAL="${SYSROOT}${PREFIX}/lib/wx/config/sparc-sun-solaris2.7-x11univ-unicode-static-3.0"
-[ -x "${WX_CONFIG_REAL}" ] \
-    || { echo "wx-config target missing at ${WX_CONFIG_REAL}"; exit 1; }
+# Glob for whichever toolkit was actually staged (x11univ vs motif vs ...)
+# so swapping the wxwidgets package's --with-x11 / --with-motif config
+# doesn't require a code change here.
+WX_CONFIG_REAL="$(ls "${SYSROOT}${PREFIX}/lib/wx/config/sparc-sun-solaris2.7-"*-unicode-static-3.0 2>/dev/null | head -1)"
+[ -n "${WX_CONFIG_REAL}" ] && [ -x "${WX_CONFIG_REAL}" ] \
+    || { echo "wx-config target missing under ${SYSROOT}${PREFIX}/lib/wx/config/"; exit 1; }
+echo "+ wx-config: ${WX_CONFIG_REAL##*/}"
 
 # Strip pkg-config-injected sysroot prefix once and re-add ours, so
 # -I and -L paths land inside the staged sysroot exactly once.
@@ -60,6 +64,10 @@ LIBS="${LIBS} -Wl,--disable-new-dtags"
 # Solaris 7 ld.so.1 calls DT_INIT but not DT_INIT_ARRAY. Point DT_INIT
 # at our INIT_ARRAY walker so all the C++ ctors / pango+glib
 # `__attribute__((constructor))` functions actually run before main.
+# wxMotif builds DON'T pull in GObject/glib/pango — those constructors
+# don't exist in this toolkit, and the walker on its own still wants
+# to drive `__init_array_start..__init_array_end` for the main exe's
+# C++ ctors (wxFrame / wxApp / our static AnsiTelnetParser).
 LIBS="${LIBS} -Wl,-init,sst_sol7_run_init_array"
 
 WX_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -77,9 +85,10 @@ echo "+ ${CXX} ${OBJ_OUT} ${LIBS} -o ${BIN_OUT}"
 ${CXX} "${OBJ_OUT}" ${LIBS} -o "${BIN_OUT}"
 
 # Patch the embedded RPATH from build-host paths to runtime paths.
-# Same pattern as the wxwidgets/test/build-hello.sh.
-patchelf --force-rpath --set-rpath '/opt/sst/lib:/usr/openwin/lib' "${BIN_OUT}" \
-    && echo "patched DT_RPATH → /opt/sst/lib:/usr/openwin/lib" \
+# /usr/dt/lib is added so libXm.so.4 (Solaris 7 CDE Motif runtime)
+# resolves at startup when wxWidgets was built --with-motif.
+patchelf --force-rpath --set-rpath '/opt/sst/lib:/usr/openwin/lib:/usr/dt/lib' "${BIN_OUT}" \
+    && echo "patched DT_RPATH → /opt/sst/lib:/usr/openwin/lib:/usr/dt/lib" \
     || echo "patchelf failed (continuing — DT_RPATH from -Wl,--disable-new-dtags is in place)"
 
 echo ""
