@@ -19,6 +19,20 @@
 #include <wx/font.h>
 #include <wx/dcclient.h>
 #include <wx/scrolwin.h>
+#include <wx/univ/theme.h>
+
+// Force-link wxUniversal themes. Without these, the static archive
+// `libwx_x11univu-3.0.a` carries the theme classes but no theme .o
+// is referenced from app code, so the linker drops them and
+// wxTheme::CreateDefault() reports "no built-in themes found" (see
+// the comment on WX_USE_THEME in wx/univ/theme.h: "without it, an
+// over optimizing linker may discard the object module containing
+// the theme implementation entirely").
+WX_USE_THEME(win32);
+WX_USE_THEME(gtk);
+WX_USE_THEME(mono);
+// metal is a delegate over win32 with darker borders — pulled in
+// transitively, no force-link needed.
 
 #include <cstddef>
 #include <vector>
