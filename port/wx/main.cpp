@@ -161,16 +161,167 @@ wxBEGIN_EVENT_TABLE(MainFrame, wxFrame)
 wxEND_EVENT_TABLE()
 
 // ─────────────────────────────────────────────────────────────────────
+// Solaris 7 SPARC global INIT_ARRAY walker.
+//
+// Solaris 7's ld.so.1 honours DT_INIT (a single function pointer) and
+// runs `_init()` for every loaded ELF, but it does NOT understand
+// DT_INIT_ARRAY — the modern way GCC records C++ static constructors
+// and `__attribute__((constructor))` functions. Since GCC 5+, every
+// ctor lands in DT_INIT_ARRAY by default; none of them run on Solaris 7.
+//
+// For wxX11 + glib + pango, that's catastrophic: GObject type
+// registration for pango lives in `__attribute__((constructor))`
+// functions inside libgobject / libpangoxft / libpango / libcairo /
+// libgio / libglib. With those skipped, `g_type_init()` aborts the
+// first time anything touches GObject.
+//
+// Walking just our own binary's INIT_ARRAY isn't enough — the ctors
+// that initialise GObject's GType system live in the shared libs.
+// We have to walk every loaded DSO's INIT_ARRAY.
+//
+// Plan: at DT_INIT time (which Solaris ld.so.1 calls for our main
+// exe AFTER all the shared libs are loaded but BEFORE main runs),
+// use dl_iterate_phdr (provided by libsolcompat on Solaris 7) to walk
+// every loaded ELF, find each one's PT_DYNAMIC, scan it for
+// DT_INIT_ARRAY + DT_INIT_ARRAYSZ, and call each function pointer.
+// Skip our own main exe (we're being called from its DT_INIT — its
+// INIT_ARRAY runs last via the linker-defined __init_array_start/end
+// symbols).
+
+// Solaris 7's <link.h> transitively includes <libelf.h>, which the
+// patched sysroot copy errors-out on whenever `_FILE_OFFSET_BITS != 32`
+// — a state most C++ source picks up implicitly via wx's flags.
+// We don't need either header for the walker; declare just enough of
+// the ELF dynamic-table machinery and dl_iterate_phdr's signature.
+
+struct sst_phdr {
+    unsigned int  p_type;
+    unsigned long p_offset;
+    unsigned long p_vaddr;
+    unsigned long p_paddr;
+    unsigned long p_filesz;
+    unsigned long p_memsz;
+    unsigned int  p_flags;
+    unsigned long p_align;
+};
+
+struct sst_dyn {
+    long          d_tag;
+    union { unsigned long d_val; unsigned long d_ptr; } d_un;
+};
+
+struct sst_dl_phdr_info {
+    unsigned long          dlpi_addr;
+    const char *           dlpi_name;
+    const struct sst_phdr * dlpi_phdr;
+    unsigned short         dlpi_phnum;
+    // libsolcompat truncates to these fields; the Linux glibc struct
+    // has more after this, but we only ever read the head.
+};
+
+#define PT_DYNAMIC          2
+#define DT_NULL             0
+#define DT_INIT_ARRAY       25
+#define DT_INIT_ARRAYSZ     27
+
+extern "C" {
+    extern void (*__init_array_start[])(int, char **, char **) __attribute__((weak));
+    extern void (*__init_array_end[])(int, char **, char **)   __attribute__((weak));
+
+    int dl_iterate_phdr(int (*)(struct sst_dl_phdr_info *, std::size_t, void *), void *);
+
+    static int sst_sol7_visit_dso(struct sst_dl_phdr_info * info, std::size_t /*sz*/, void * /*data*/) {
+        // Skip the main executable — its INIT_ARRAY is run separately
+        // via the linker-emitted __init_array_{start,end} brackets.
+        if (info->dlpi_addr == 0 && info->dlpi_name && info->dlpi_name[0] == '\0') {
+            return 0;
+        }
+        // Find PT_DYNAMIC in this DSO.
+        const struct sst_phdr * dyn_phdr = nullptr;
+        for (unsigned i = 0; i < info->dlpi_phnum; ++i) {
+            if (info->dlpi_phdr[i].p_type == PT_DYNAMIC) {
+                dyn_phdr = &info->dlpi_phdr[i];
+                break;
+            }
+        }
+        if (!dyn_phdr) return 0;
+
+        const struct sst_dyn * dyn = (const struct sst_dyn *)(info->dlpi_addr + dyn_phdr->p_vaddr);
+        void (**init_array)(int, char **, char **) = nullptr;
+        std::size_t init_array_sz = 0;
+        for (; dyn->d_tag != DT_NULL; ++dyn) {
+            if (dyn->d_tag == DT_INIT_ARRAY)
+                init_array = (void (**)(int, char **, char **))(info->dlpi_addr + dyn->d_un.d_ptr);
+            else if (dyn->d_tag == DT_INIT_ARRAYSZ)
+                init_array_sz = dyn->d_un.d_val / sizeof(void *);
+        }
+        if (!init_array || !init_array_sz) return 0;
+
+        std::fprintf(stderr, "[sst-init] %s: walking %zu init_array entries\n",
+                     info->dlpi_name && *info->dlpi_name ? info->dlpi_name : "(self)",
+                     init_array_sz);
+        for (std::size_t i = 0; i < init_array_sz; ++i) {
+            if (init_array[i]) init_array[i](0, nullptr, nullptr);
+        }
+        return 0;
+    }
+
+    __attribute__((visibility("default")))
+    void sst_sol7_run_init_array(void) {
+        std::setvbuf(stderr, nullptr, _IONBF, 0);   // unbuffered so we see progress before any abort
+        std::fprintf(stderr, "[sst-init] DT_INIT entered\n");
+
+        // Phase 1: walk every loaded shared library's INIT_ARRAY.
+        // dl_iterate_phdr is provided by libsolcompat on Solaris 7.
+        dl_iterate_phdr(sst_sol7_visit_dso, nullptr);
+
+        // Phase 2: walk our own binary's INIT_ARRAY (the C++ ctors
+        // for our wxApp etc. live here, not in any DSO).
+        if (__init_array_start && __init_array_end) {
+            std::size_t n = __init_array_end - __init_array_start;
+            std::fprintf(stderr, "[sst-init] (main exe): walking %zu init_array entries\n", n);
+            for (void (**fn)(int, char **, char **) = __init_array_start;
+                 fn < __init_array_end; ++fn)
+            {
+                if (*fn) (*fn)(0, nullptr, nullptr);
+            }
+        }
+        std::fprintf(stderr, "[sst-init] DT_INIT done\n");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // App
 // ─────────────────────────────────────────────────────────────────────
 
 class App : public wxApp {
 public:
     bool OnInit() override {
-        if (!wxApp::OnInit()) return false;
-        (new MainFrame())->Show(true);
+        std::fprintf(stderr, "[wx] App::OnInit entered\n");
+        if (!wxApp::OnInit()) {
+            std::fprintf(stderr, "[wx] base OnInit returned false\n");
+            return false;
+        }
+        std::fprintf(stderr, "[wx] base OnInit OK; creating MainFrame\n");
+        MainFrame * f = new MainFrame();
+        std::fprintf(stderr, "[wx] MainFrame ctor returned; calling Show\n");
+        f->Show(true);
+        std::fprintf(stderr, "[wx] Show returned; entering event loop\n");
         return true;
     }
 };
 
-wxIMPLEMENT_APP(App);
+// Use IMPLEMENT_APP_NO_MAIN so we can write our own main() that
+// drives the global INIT_ARRAY walker before wxEntry instantiates
+// the wxApp instance.
+wxIMPLEMENT_APP_NO_MAIN(App);
+
+int main(int argc, char ** argv) {
+    sst_sol7_run_init_array();
+    std::fprintf(stderr, "[main] sst init done; DISPLAY=%s; calling wxEntry\n",
+                 std::getenv("DISPLAY") ? std::getenv("DISPLAY") : "(unset)");
+    std::fflush(stderr);
+    int rc = wxEntry(argc, argv);
+    std::fprintf(stderr, "[main] wxEntry returned %d\n", rc);
+    return rc;
+}

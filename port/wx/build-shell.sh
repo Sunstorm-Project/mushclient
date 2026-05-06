@@ -57,6 +57,11 @@ LIBS="${LIBS} -lpthread"
 # finds /opt/sst/lib + /usr/openwin/lib at startup.
 LIBS="${LIBS} -Wl,--disable-new-dtags"
 
+# Solaris 7 ld.so.1 calls DT_INIT but not DT_INIT_ARRAY. Point DT_INIT
+# at our INIT_ARRAY walker so all the C++ ctors / pango+glib
+# `__attribute__((constructor))` functions actually run before main.
+LIBS="${LIBS} -Wl,-init,sst_sol7_run_init_array"
+
 WX_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "${WX_DIR}"
 

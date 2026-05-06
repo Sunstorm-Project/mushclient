@@ -147,6 +147,51 @@ NOT YET CLASSIFIED:
 * `spell/*.cpp` — spellcheck. Likely DELETE (use hunspell directly
   if needed; the scripting/ directory may already integrate it).
 
+## 2026-05-06 wx shell bring-up: blocked on wxX11 startup hang
+
+Real wins:
+
+* **INIT_ARRAY walker** lands at `port/wx/main.cpp::sst_sol7_run_init_array`.
+  Solaris 7's ld.so.1 honours DT_INIT but ignores DT_INIT_ARRAY, so
+  every C++ static ctor and `__attribute__((constructor))` from GCC 5+
+  (including all of GObject's type registration) silently never runs.
+  Result: pango touches GObject → `g_type_init` aborts on
+  `static_quark_type_flags`. Walker uses libsolcompat's
+  `dl_iterate_phdr` to walk every loaded DSO, find PT_DYNAMIC →
+  DT_INIT_ARRAY, and run each entry. Hooked into the binary's `main()`
+  before `wxEntry()` (Solaris 7 ld.so doesn't call DT_INIT for the
+  main exe, only for shared libs — so we drive it from main).
+  Verified working: 7 DSOs found and walked (libgobject, libglib,
+  libsolcompat, libstdc++, libgcc_s, libpixman, plus the main exe
+  itself), no GLib assertion, process reaches `main()` cleanly.
+
+* **DT_RPATH instead of DT_RUNPATH** via `-Wl,--disable-new-dtags`
+  (Solaris 7 ld.so doesn't honour DT_RUNPATH).
+
+* **xauth path**: dtlogin's session-rotated cookie lives at
+  `/.Xauthority` after login. The stale `/var/dt/A:0-*` files don't
+  authorise into the live X session.
+
+Active blocker:
+
+* **wxX11/wxUniversal startup hang.** After the INIT_ARRAY walker
+  completes, `wxEntry()` enters a 100% CPU busy-loop and never
+  reaches `wxApp::OnInit`. Reproducible with both the full
+  splitter+output+input shell AND a minimal `wxFrame` + `wxStaticText`
+  smoke. This is exactly the hazard called out in the original pickup
+  prompt: *"wxX11 backend is famously alpha-quality"*. Until we
+  diagnose where in `wxApp::Initialize` it spins, the wx-shell path
+  is not viable on this stack.
+
+  Diagnostic next steps for this hang:
+    1. `truss -p PID` after the loop is going, see what syscalls (if
+       any) it's making.
+    2. Build a dwarf-debuggable binary (`-g -O0`) and `gdb -p PID` to
+       capture the call stack.
+    3. Try `--with-gtk` / `--with-motif` rebuilds of wxWidgets if
+       feasible against Solaris 7; pure-Xlib custom shell as a third
+       option.
+
 ## Compile pass / fail tally (top-level KEEP+SHIM .cpp files, as of 2026-05-05 18:30)
 
 After 9 shim iterations the grind hit a structural blocker. Status:
