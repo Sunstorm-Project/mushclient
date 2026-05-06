@@ -19,7 +19,10 @@
 #include <wx/font.h>
 #include <wx/dcclient.h>
 #include <wx/scrolwin.h>
+#include <wx/socket.h>
+#include <wx/textdlg.h>
 #include <wx/univ/theme.h>
+#include <string>
 
 // Force-link wxUniversal themes. Without these, the static archive
 // `libwx_x11univu-3.0.a` carries the theme classes but no theme .o
@@ -97,6 +100,9 @@ enum {
     ID_File_Quit = wxID_EXIT,
     ID_Help_About = wxID_ABOUT,
     ID_Input_Send = wxID_HIGHEST + 1,
+    ID_File_Connect,
+    ID_File_Disconnect,
+    ID_Socket,
 };
 
 class MainFrame : public wxFrame {
@@ -114,7 +120,10 @@ public:
 private:
     void BuildMenuBar() {
         wxMenu * file = new wxMenu;
-        file->Append(ID_File_Quit, wxT("E&xit\tCtrl+Q"), wxT("Close MUSHclient"));
+        file->Append(ID_File_Connect,    wxT("&Connect...\tCtrl+N"), wxT("Connect to a MUD server"));
+        file->Append(ID_File_Disconnect, wxT("&Disconnect"),         wxT("Drop the current connection"));
+        file->AppendSeparator();
+        file->Append(ID_File_Quit,       wxT("E&xit\tCtrl+Q"),       wxT("Close MUSHclient"));
         wxMenu * help = new wxMenu;
         help->Append(ID_Help_About, wxT("&About...\tF1"), wxT("About MUSHclient SPARC port"));
         wxMenuBar * mb = new wxMenuBar;
@@ -128,7 +137,7 @@ private:
         int widths[2] = { -3, -1 };
         sb->SetStatusWidths(2, widths);
         sb->SetStatusText(wxT("not connected"), 0);
-        sb->SetStatusText(wxT("v0.1-port"), 1);
+        sb->SetStatusText(wxT("v0.2-port"), 1);
     }
 
     void BuildSplit() {
@@ -142,8 +151,10 @@ private:
         split->SplitHorizontally(m_output, m_input, -120);
         split->SetMinimumPaneSize(60);
 
-        m_output->AppendLine(wxT("MUSHclient SPARC Solaris 7 port — v0.1 shell"));
-        m_output->AppendLine(wxT("Type below and press Enter to echo."));
+        m_output->AppendLine(wxT("MUSHclient SPARC Solaris 7 port — v0.2 shell"));
+        m_output->AppendLine(wxT("File → Connect... to dial a MUD; lines you type"));
+        m_output->AppendLine(wxT("get sent. ANSI / triggers / aliases / scripting"));
+        m_output->AppendLine(wxT("are still TODO — this is a bring-up shell."));
         m_output->AppendLine(wxEmptyString);
 
         m_input->SetFocus();
@@ -152,26 +163,144 @@ private:
     void OnQuit(wxCommandEvent &)  { Close(true); }
     void OnAbout(wxCommandEvent &) {
         wxMessageBox(wxT("MUSHclient SPARC Solaris 7 port\n"
-                         "wxWidgets/X11 shell — v0.1\n\n"
+                         "wxWidgets/X11 shell — v0.2\n\n"
+                         "Connect / Disconnect via the File menu.\n"
+                         "Lines from the server land in the output pane.\n"
+                         "Lines you type in the input box go to the server.\n\n"
                          "Sunstorm-Project/mushclient feat/sparc-solaris7-port"),
                      wxT("About"), wxOK | wxICON_INFORMATION, this);
     }
+
+    void OnConnect(wxCommandEvent &) {
+        if (m_socket && m_socket->IsConnected()) {
+            wxMessageBox(wxT("Already connected — disconnect first."),
+                         wxT("Connect"), wxOK, this);
+            return;
+        }
+        // Default to Aardwolf as a recognisable MUSH-style sandbox.
+        wxString hp = wxGetTextFromUser(
+            wxT("Enter host:port (e.g. aardmud.org:23)"),
+            wxT("Connect to MUD"),
+            m_lastHostPort.IsEmpty() ? wxT("aardmud.org:23") : m_lastHostPort,
+            this);
+        if (hp.IsEmpty()) return;
+        m_lastHostPort = hp;
+
+        wxString host, portstr;
+        const int colon = hp.Find(':', true /*from end*/);
+        if (colon == wxNOT_FOUND) {
+            host = hp;
+            portstr = wxT("23");
+        } else {
+            host    = hp.Mid(0, colon);
+            portstr = hp.Mid(colon + 1);
+        }
+        long port = 0;
+        if (!portstr.ToLong(&port) || port <= 0 || port > 65535) {
+            wxMessageBox(wxT("Bad port number."), wxT("Connect"),
+                         wxOK | wxICON_ERROR, this);
+            return;
+        }
+
+        wxIPV4address addr;
+        addr.Hostname(host);
+        addr.Service(static_cast<unsigned short>(port));
+
+        if (m_socket) { m_socket->Destroy(); m_socket = nullptr; }
+        m_socket = new wxSocketClient(wxSOCKET_NOWAIT);
+        m_socket->SetEventHandler(*this, ID_Socket);
+        m_socket->SetNotify(wxSOCKET_INPUT_FLAG | wxSOCKET_LOST_FLAG | wxSOCKET_CONNECTION_FLAG);
+        m_socket->Notify(true);
+
+        m_output->AppendLine(wxString::Format(wxT("Connecting to %s:%ld..."), host, port));
+        m_socket->Connect(addr, false);  // async — events come back via OnSocketEvent
+    }
+
+    void OnDisconnect(wxCommandEvent &) {
+        if (m_socket) {
+            m_socket->Close();
+            m_socket->Destroy();
+            m_socket = nullptr;
+            m_output->AppendLine(wxT("--- disconnected ---"));
+        }
+        UpdateStatus();
+    }
+
+    void OnSocketEvent(wxSocketEvent & ev) {
+        wxSocketBase * sock = ev.GetSocket();
+        switch (ev.GetSocketEvent()) {
+            case wxSOCKET_CONNECTION:
+                m_output->AppendLine(wxT("--- connected ---"));
+                UpdateStatus();
+                break;
+            case wxSOCKET_INPUT: {
+                char buf[4096];
+                sock->Read(buf, sizeof(buf));
+                const std::size_t n = sock->LastCount();
+                if (n == 0) break;
+                m_lineBuf.append(buf, n);
+                std::string::size_type pos;
+                while ((pos = m_lineBuf.find('\n')) != std::string::npos) {
+                    std::string line = m_lineBuf.substr(0, pos);
+                    if (!line.empty() && line.back() == '\r') line.pop_back();
+                    m_output->AppendLine(wxString::FromUTF8(line.c_str(), line.size()));
+                    m_lineBuf.erase(0, pos + 1);
+                }
+                break;
+            }
+            case wxSOCKET_LOST:
+                m_output->AppendLine(wxT("--- connection lost ---"));
+                if (m_socket) { m_socket->Destroy(); m_socket = nullptr; }
+                UpdateStatus();
+                break;
+            default:
+                break;
+        }
+    }
+
+    void UpdateStatus() {
+        wxStatusBar * sb = GetStatusBar();
+        if (!sb) return;
+        if (m_socket && m_socket->IsConnected()) {
+            sb->SetStatusText(wxString::Format(wxT("connected: %s"), m_lastHostPort), 0);
+        } else {
+            sb->SetStatusText(wxT("not connected"), 0);
+        }
+    }
+
     void OnInputEnter(wxCommandEvent & ev) {
         const wxString line = ev.GetString();
-        m_output->AppendLine(wxString::Format(wxT("> %s"), line));
+        if (m_socket && m_socket->IsConnected()) {
+            wxString out = line + wxT("\r\n");
+            const wxScopedCharBuffer utf8 = out.utf8_str();
+            m_socket->Write(utf8.data(), utf8.length());
+            // local echo so the user sees what they typed even before
+            // the server echoes it back. MUDs typically suppress echo
+            // of password lines via TELNET WILL ECHO; we'll handle
+            // that later when we add a real ANSI/telnet parser.
+            m_output->AppendLine(wxString::Format(wxT("> %s"), line));
+        } else {
+            m_output->AppendLine(wxString::Format(wxT("(offline) > %s"), line));
+        }
         m_input->Clear();
     }
 
-    OutputPane * m_output{nullptr};
-    wxTextCtrl * m_input{nullptr};
+    OutputPane *     m_output{nullptr};
+    wxTextCtrl *     m_input{nullptr};
+    wxSocketClient * m_socket{nullptr};
+    std::string      m_lineBuf;       // partial line accumulator (server side)
+    wxString         m_lastHostPort;  // remember last destination
 
     wxDECLARE_EVENT_TABLE();
 };
 
 wxBEGIN_EVENT_TABLE(MainFrame, wxFrame)
-    EVT_MENU(ID_File_Quit,     MainFrame::OnQuit)
-    EVT_MENU(ID_Help_About,    MainFrame::OnAbout)
-    EVT_TEXT_ENTER(ID_Input_Send, MainFrame::OnInputEnter)
+    EVT_MENU(ID_File_Quit,         MainFrame::OnQuit)
+    EVT_MENU(ID_File_Connect,      MainFrame::OnConnect)
+    EVT_MENU(ID_File_Disconnect,   MainFrame::OnDisconnect)
+    EVT_MENU(ID_Help_About,        MainFrame::OnAbout)
+    EVT_TEXT_ENTER(ID_Input_Send,  MainFrame::OnInputEnter)
+    EVT_SOCKET(ID_Socket,          MainFrame::OnSocketEvent)
 wxEND_EVENT_TABLE()
 
 // ─────────────────────────────────────────────────────────────────────
@@ -319,6 +448,9 @@ public:
             std::fprintf(stderr, "[wx] base OnInit returned false\n");
             return false;
         }
+        // wxBase initialises wxSocket implicitly on first use, but
+        // calling it here explicitly makes the lifetime obvious.
+        wxSocketBase::Initialize();
         std::fprintf(stderr, "[wx] base OnInit OK; creating MainFrame\n");
         MainFrame * f = new MainFrame();
         std::fprintf(stderr, "[wx] MainFrame ctor returned; calling Show\n");
