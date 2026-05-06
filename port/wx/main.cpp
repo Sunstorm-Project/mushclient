@@ -250,14 +250,23 @@ public:
         : wxTextCtrl(parent, wxID_ANY, wxEmptyString,
                      wxDefaultPosition, wxDefaultSize,
                      wxTE_READONLY | wxTE_MULTILINE |
-                     wxTE_DONTWRAP | wxBORDER_SUNKEN)
+                     wxTE_DONTWRAP | wxBORDER_SUNKEN | wxTE_RICH2)
     {
-        // Use system defaults (white bg, black text) for visibility.
-        // SetBackgroundColour on wxX11 wxTextCtrl doesn't recolour
-        // the text-area background — it's painted by the widget's
-        // own theme. Setting it black combined with default-black
-        // text would render invisibly. Keep default and let the
-        // user see something.
+        // MUSHclient defaults: light grey on black, fixed-pitch
+        // dtterm-style font. wxMotif's wxTextCtrl may not honour
+        // SetBackgroundColour on Solaris 7 — we still set it for
+        // any backend that does. The font request goes through Xt
+        // and resolves to a CDE Courier face on this stack.
+        SetBackgroundColour(*wxBLACK);
+        SetForegroundColour(wxColour(192, 192, 192));
+
+        wxFont term(12, wxFONTFAMILY_TELETYPE,
+                    wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL,
+                    false, wxEmptyString);
+        SetFont(term);
+
+        wxTextAttr defAttr(wxColour(192, 192, 192), *wxBLACK, term);
+        SetDefaultStyle(defAttr);
     }
 
     void AppendLine(const wxString & s) {
@@ -292,17 +301,49 @@ enum {
     ID_File_Connect,
     ID_File_Disconnect,
     ID_Socket,
+    ID_PollTimer,
+};
+
+// SegmentedStatusBar — wxMotif's default wxStatusBar paints as a flat
+// strip with no field separators. Real CDE / Motif apps use a row of
+// XmFrame-with-SHADOW_IN segments. We approximate that with a wxPanel
+// hosting a horizontal sizer of wxStaticText controls each with a
+// wxBORDER_SUNKEN; wxMotif maps that to an XmFrame with shadowType=
+// SHADOW_IN, giving the inset look. Layout matches Gammon's MainFrm:
+// wide status field plus three narrow fields (lines / output / time)
+// at stretch 4:1:1:1.
+class SegmentedStatusBar : public wxPanel {
+public:
+    enum Field { F_Status = 0, F_Lines, F_Output, F_Time, F_Count };
+    SegmentedStatusBar(wxWindow * parent)
+        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE)
+    {
+        wxBoxSizer * row = new wxBoxSizer(wxHORIZONTAL);
+        const int stretch[F_Count] = { 4, 1, 1, 1 };
+        for (int i = 0; i < F_Count; ++i) {
+            m_field[i] = new wxStaticText(this, wxID_ANY, wxEmptyString,
+                                          wxDefaultPosition, wxDefaultSize,
+                                          wxBORDER_SUNKEN | wxST_NO_AUTORESIZE);
+            row->Add(m_field[i], stretch[i], wxEXPAND | wxALL, 1);
+        }
+        SetSizer(row);
+        SetMinSize(wxSize(-1, 22));
+    }
+    void Set(Field f, const wxString & s) {
+        if (f >= 0 && f < F_Count) m_field[f]->SetLabel(s);
+    }
+private:
+    wxStaticText * m_field[F_Count]{};
 };
 
 class MainFrame : public wxFrame {
 public:
     MainFrame()
-        : wxFrame(nullptr, wxID_ANY, wxT("MUSHclient — SPARC Solaris 7 port"),
+        : wxFrame(nullptr, wxID_ANY, wxT("MUSHclient"),
                   wxDefaultPosition, wxSize(880, 600))
     {
         BuildMenuBar();
-        BuildStatusBar();
-        BuildSplit();
+        BuildClientArea();
         SetMinSize(wxSize(480, 360));
     }
 
@@ -321,30 +362,29 @@ private:
         SetMenuBar(mb);
     }
 
-    void BuildStatusBar() {
-        wxStatusBar * sb = CreateStatusBar(2);
-        int widths[2] = { -3, -1 };
-        sb->SetStatusWidths(2, widths);
-        sb->SetStatusText(wxT("not connected"), 0);
-        sb->SetStatusText(wxT("v0.5-port"), 1);
-    }
+    void BuildClientArea() {
+        // Top-level vertical layout: splitter on top, segmented status
+        // bar pinned to the bottom. We build our own status bar (rather
+        // than wxFrame::CreateStatusBar) because wxMotif's default is a
+        // flat un-segmented strip; SegmentedStatusBar gives us the
+        // proper CDE sunken-bevel multi-field look.
+        wxBoxSizer * frame_sizer = new wxBoxSizer(wxVERTICAL);
 
-    void BuildSplit() {
         wxSplitterWindow * split = new wxSplitterWindow(this, wxID_ANY,
             wxDefaultPosition, wxDefaultSize, wxSP_3D | wxSP_LIVE_UPDATE);
-
         m_output = new OutputPane(split);
-        m_input  = new wxTextCtrl(split, ID_Input_Send,
-                                  wxEmptyString, wxDefaultPosition, wxDefaultSize,
+        m_input  = new wxTextCtrl(split, ID_Input_Send, wxEmptyString,
+                                  wxDefaultPosition, wxDefaultSize,
                                   wxTE_PROCESS_ENTER);
         split->SplitHorizontally(m_output, m_input, -120);
         split->SetMinimumPaneSize(60);
 
-        m_output->AppendLine(wxT("MUSHclient SPARC Solaris 7 port — v0.5 shell"));
-        m_output->AppendLine(wxT("File -> Connect... to dial a MUD; lines you type"));
-        m_output->AppendLine(wxT("are sent to the server. ANSI colour / triggers /"));
-        m_output->AppendLine(wxT("aliases / scripting are still TODO — bring-up only."));
-        m_output->AppendLine(wxEmptyString);
+        m_status = new SegmentedStatusBar(this);
+        m_status->Set(SegmentedStatusBar::F_Status, wxT("Ready"));
+
+        frame_sizer->Add(split,    1, wxEXPAND);
+        frame_sizer->Add(m_status, 0, wxEXPAND);
+        SetSizer(frame_sizer);
 
         m_input->SetFocus();
     }
@@ -360,30 +400,22 @@ private:
                      wxT("About"), wxOK | wxICON_INFORMATION, this);
     }
 
-    void OnConnect(wxCommandEvent &) {
+public:
+    // Public so MUSHCLIENT_AUTOCONNECT env-var hook can call us
+    // without going through the wxGetTextFromUser modal.
+    void DoConnect(const wxString & hp) {
         if (m_socket && m_socket->IsConnected()) {
             wxMessageBox(wxT("Already connected — disconnect first."),
                          wxT("Connect"), wxOK, this);
             return;
         }
-        // Default to Aardwolf as a recognisable MUSH-style sandbox.
-        wxString hp = wxGetTextFromUser(
-            wxT("Enter host:port (e.g. aardmud.org:23)"),
-            wxT("Connect to MUD"),
-            m_lastHostPort.IsEmpty() ? wxT("aardmud.org:23") : m_lastHostPort,
-            this);
         if (hp.IsEmpty()) return;
         m_lastHostPort = hp;
 
         wxString host, portstr;
-        const int colon = hp.Find(':', true /*from end*/);
-        if (colon == wxNOT_FOUND) {
-            host = hp;
-            portstr = wxT("23");
-        } else {
-            host    = hp.Mid(0, colon);
-            portstr = hp.Mid(colon + 1);
-        }
+        const int colon = hp.Find(':', true);
+        if (colon == wxNOT_FOUND) { host = hp; portstr = wxT("23"); }
+        else { host = hp.Mid(0, colon); portstr = hp.Mid(colon + 1); }
         long port = 0;
         if (!portstr.ToLong(&port) || port <= 0 || port > 65535) {
             wxMessageBox(wxT("Bad port number."), wxT("Connect"),
@@ -400,10 +432,32 @@ private:
         m_socket->SetEventHandler(*this, ID_Socket);
         m_socket->SetNotify(wxSOCKET_INPUT_FLAG | wxSOCKET_LOST_FLAG | wxSOCKET_CONNECTION_FLAG);
         m_socket->Notify(true);
-        m_parser = AnsiTelnetParser{};   // reset parser state per connection
+        m_parser = AnsiTelnetParser{};
 
         m_output->AppendLine(wxString::Format(wxT("Connecting to %s:%ld..."), host, port));
-        m_socket->Connect(addr, false);  // async — events come back via OnSocketEvent
+        // wxMotif's async wxSOCKET_CONNECTION event is unreliable on
+        // Solaris 7; explicit WaitOnConnect drives the FD to readiness
+        // here. wxSOCKET_INPUT also doesn't fire reliably so we poll
+        // the recv buffer on a 50ms wxTimer (see m_pollTimer + DrainSocket).
+        m_socket->Connect(addr, false);
+        const bool ok = m_socket->WaitOnConnect(10);
+        if (!ok || !m_socket->IsConnected()) {
+            m_output->AppendLine(wxT("--- connect failed (timeout or refused) ---"));
+            return;
+        }
+        m_output->AppendLine(wxT("--- connected ---"));
+        UpdateStatus();
+        m_pollTimer.Start(50);
+    }
+private:
+    void OnConnect(wxCommandEvent &) {
+        wxString hp = wxGetTextFromUser(
+            wxT("Enter host:port (e.g. aardmud.org:23)"),
+            wxT("Connect to MUD"),
+            m_lastHostPort.IsEmpty() ? wxT("aardmud.org:23") : m_lastHostPort,
+            this);
+        if (hp.IsEmpty()) return;
+        DoConnect(hp);
     }
 
     void OnDisconnect(wxCommandEvent &) {
@@ -452,12 +506,12 @@ private:
     }
 
     void UpdateStatus() {
-        wxStatusBar * sb = GetStatusBar();
-        if (!sb) return;
+        if (!m_status) return;
         if (m_socket && m_socket->IsConnected()) {
-            sb->SetStatusText(wxString::Format(wxT("connected: %s"), m_lastHostPort), 0);
+            m_status->Set(SegmentedStatusBar::F_Status,
+                          wxString::Format(wxT("Connected to %s"), m_lastHostPort));
         } else {
-            sb->SetStatusText(wxT("not connected"), 0);
+            m_status->Set(SegmentedStatusBar::F_Status, wxT("Ready"));
         }
     }
 
@@ -478,12 +532,43 @@ private:
         m_input->Clear();
     }
 
-    OutputPane *      m_output{nullptr};
-    wxTextCtrl *      m_input{nullptr};
-    wxSocketClient *  m_socket{nullptr};
-    AnsiTelnetParser  m_parser;        // server-side ANSI / telnet parser
-    wxString          m_lastHostPort;  // remember last destination
+    OutputPane *         m_output{nullptr};
+    wxTextCtrl *         m_input{nullptr};
+    wxSocketClient *     m_socket{nullptr};
+    SegmentedStatusBar * m_status{nullptr};
+    AnsiTelnetParser     m_parser;        // server-side ANSI / telnet parser
+    wxString             m_lastHostPort;  // remember last destination
+    wxTimer              m_pollTimer{this, ID_PollTimer};
 
+public:
+    // Pulled out of OnSocketEvent so the poll-timer path can call it.
+    // wxMotif on Solaris 7 doesn't fire wxSOCKET_INPUT events reliably;
+    // we drive reads off m_pollTimer at 50ms instead.
+    void DrainSocket() {
+        if (!m_socket || !m_socket->IsConnected()) return;
+        for (;;) {
+            char buf[4096];
+            m_socket->Read(buf, sizeof(buf));
+            const std::size_t n = m_socket->LastCount();
+            if (n == 0) break;
+            m_parser.Feed(buf, n,
+                [this](std::vector<AnsiSpan> && spans) {
+                    m_output->AppendStyledLine(std::move(spans));
+                });
+            if (n < sizeof(buf)) break;
+        }
+        m_output->SetPendingLine(m_parser.Pending());
+        if (m_socket->IsDisconnected()) {
+            m_output->AppendLine(wxT("--- connection lost ---"));
+            m_socket->Destroy();
+            m_socket = nullptr;
+            m_pollTimer.Stop();
+            UpdateStatus();
+        }
+    }
+    void OnPollTimer(wxTimerEvent &) { DrainSocket(); }
+
+private:
     wxDECLARE_EVENT_TABLE();
 };
 
@@ -494,6 +579,7 @@ wxBEGIN_EVENT_TABLE(MainFrame, wxFrame)
     EVT_MENU(ID_Help_About,        MainFrame::OnAbout)
     EVT_TEXT_ENTER(ID_Input_Send,  MainFrame::OnInputEnter)
     EVT_SOCKET(ID_Socket,          MainFrame::OnSocketEvent)
+    EVT_TIMER(ID_PollTimer,        MainFrame::OnPollTimer)
 wxEND_EVENT_TABLE()
 
 // ─────────────────────────────────────────────────────────────────────
@@ -647,6 +733,16 @@ public:
         std::fprintf(stderr, "[wx] MainFrame ctor returned; calling Show\n");
         f->Show(true);
         std::fprintf(stderr, "[wx] Show returned; entering event loop\n");
+
+        // MUSHCLIENT_AUTOCONNECT=host:port — auto-connect at startup,
+        // skipping the wxGetTextFromUser dialog. Useful for scripted
+        // testing and as a poor-man's auto-open-last-world.
+        if (const char * hp = std::getenv("MUSHCLIENT_AUTOCONNECT")) {
+            if (*hp) {
+                std::fprintf(stderr, "[wx] autoconnect: %s\n", hp);
+                f->DoConnect(wxString::FromUTF8(hp));
+            }
+        }
         return true;
     }
 };
