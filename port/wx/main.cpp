@@ -38,13 +38,163 @@ WX_USE_THEME(mono);
 // transitively, no force-link needed.
 
 #include <cstddef>
+#include <cstdlib>
 #include <vector>
 
 // ─────────────────────────────────────────────────────────────────────
-// OutputPane — custom-drawn rolling-text window. wxRichTextCtrl is
-// avoided because wxX11/wxUniversal renders it poorly. Each line is a
-// std::string in a circular buffer; OnPaint walks the visible range
-// and renders via wxDC::DrawText.
+// AnsiSpan — one stretch of text sharing a single foreground colour
+// and bold attribute. Lines in the OutputPane are sequences of spans.
+// We don't render background colour yet; the entire pane stays
+// black-on-coloured.
+// ─────────────────────────────────────────────────────────────────────
+
+struct AnsiSpan {
+    wxString text;
+    wxColour fg;
+    bool     bold;
+};
+
+// Standard ANSI palette, indexed by code 30-37 (foreground) — dim
+// row for non-bold, bright row for bold.
+static wxColour AnsiPaletteColour(int idx, bool bold) {
+    static const unsigned char dim[8][3] = {
+        {0x00,0x00,0x00}, {0xAA,0x00,0x00}, {0x00,0xAA,0x00}, {0xAA,0x55,0x00},
+        {0x00,0x00,0xAA}, {0xAA,0x00,0xAA}, {0x00,0xAA,0xAA}, {0xAA,0xAA,0xAA},
+    };
+    static const unsigned char bri[8][3] = {
+        {0x55,0x55,0x55}, {0xFF,0x55,0x55}, {0x55,0xFF,0x55}, {0xFF,0xFF,0x55},
+        {0x55,0x55,0xFF}, {0xFF,0x55,0xFF}, {0x55,0xFF,0xFF}, {0xFF,0xFF,0xFF},
+    };
+    if (idx < 0 || idx > 7) idx = 7;
+    const unsigned char * p = bold ? bri[idx] : dim[idx];
+    return wxColour(p[0], p[1], p[2]);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// AnsiTelnetParser — feeds raw socket bytes through a state machine,
+// splits on '\n', strips telnet IAC sequences (we don't reply to
+// negotiations yet — most MUDs accept silence as "WONT"), and
+// converts ANSI SGR escapes into per-span colour/bold metadata.
+//
+// The parser keeps state across Feed() calls so a chunk that splits
+// mid-escape or mid-line works correctly.
+// ─────────────────────────────────────────────────────────────────────
+
+class AnsiTelnetParser {
+public:
+    enum Phase {
+        P_NORMAL,
+        P_ESC,
+        P_CSI,
+        P_IAC,
+        P_IAC_OPT,
+        P_IAC_SB,
+        P_IAC_SB_IAC,
+    };
+
+    // Feed n bytes; for each completed '\n'-terminated line, call
+    // emit(std::vector<AnsiSpan> &&). Carriage returns are stripped.
+    template <typename Emit>
+    void Feed(const char * data, std::size_t n, Emit emit) {
+        for (std::size_t i = 0; i < n; ++i) {
+            unsigned char c = static_cast<unsigned char>(data[i]);
+            switch (m_phase) {
+                case P_NORMAL:
+                    if (c == 0x1B)      { Flush(); m_phase = P_ESC; }
+                    else if (c == 0xFF) { Flush(); m_phase = P_IAC; }
+                    else if (c == '\r') { /* swallow */ }
+                    else if (c == '\n') {
+                        Flush();
+                        emit(std::move(m_curLine));
+                        m_curLine.clear();
+                    } else {
+                        m_cur.append(reinterpret_cast<const char *>(&c), 1);
+                    }
+                    break;
+                case P_ESC:
+                    if (c == '[') { m_phase = P_CSI; m_csiParams.clear(); }
+                    else          { m_phase = P_NORMAL; }
+                    break;
+                case P_CSI:
+                    if ((c >= '0' && c <= '9') || c == ';') {
+                        m_csiParams.append(reinterpret_cast<const char *>(&c), 1);
+                    } else {
+                        if (c == 'm') ApplySGR();
+                        m_phase = P_NORMAL;
+                    }
+                    break;
+                case P_IAC:
+                    // 251 WILL  252 WONT  253 DO  254 DONT  → option byte follows
+                    if (c >= 251 && c <= 254) m_phase = P_IAC_OPT;
+                    else if (c == 250)        m_phase = P_IAC_SB;     // SB → subneg
+                    else                      m_phase = P_NORMAL;     // SE/NOP/etc
+                    break;
+                case P_IAC_OPT:
+                    m_phase = P_NORMAL;       // eat the option byte
+                    break;
+                case P_IAC_SB:
+                    if (c == 0xFF) m_phase = P_IAC_SB_IAC;            // saw IAC inside SB
+                    // else stay in subneg (data byte) — ignored
+                    break;
+                case P_IAC_SB_IAC:
+                    // either SE (0xF0, end of subneg) or escaped 0xFF in subneg data;
+                    // in both cases return to NORMAL to keep the parser tractable.
+                    m_phase = P_NORMAL;
+                    break;
+            }
+        }
+    }
+
+private:
+    void Flush() {
+        if (m_cur.empty()) return;
+        AnsiSpan span;
+        span.text = wxString::FromUTF8(m_cur.c_str(), m_cur.size());
+        span.fg   = AnsiPaletteColour(m_fgIndex, m_bold);
+        span.bold = m_bold;
+        m_curLine.push_back(std::move(span));
+        m_cur.clear();
+    }
+
+    void ApplySGR() {
+        std::vector<int> codes;
+        std::string token;
+        for (char c : m_csiParams) {
+            if (c == ';') {
+                if (!token.empty()) codes.push_back(std::atoi(token.c_str()));
+                token.clear();
+            } else {
+                token += c;
+            }
+        }
+        if (!token.empty()) codes.push_back(std::atoi(token.c_str()));
+        if (codes.empty())  codes.push_back(0);   // ESC[m == ESC[0m
+
+        for (int code : codes) {
+            if      (code == 0)                  { m_bold = false; m_fgIndex = 7; }
+            else if (code == 1)                  { m_bold = true; }
+            else if (code == 22)                 { m_bold = false; }
+            else if (code >= 30 && code <= 37)   { m_fgIndex = code - 30; }
+            else if (code == 39)                 { m_fgIndex = 7; }
+            // background (40-47, 49) ignored for v0.3 — we draw on
+            // a fixed-black pane for now
+        }
+    }
+
+    Phase                  m_phase{P_NORMAL};
+    std::string            m_csiParams;
+    std::string            m_cur;
+    std::vector<AnsiSpan>  m_curLine;
+    bool                   m_bold{false};
+    int                    m_fgIndex{7};   // default = white
+};
+
+// ─────────────────────────────────────────────────────────────────────
+// OutputPane — custom-drawn rolling-text window with per-span colour.
+// Each line is a vector<AnsiSpan>; OnPaint walks the visible range
+// and draws each span at the right x offset using its own foreground
+// colour. wxRichTextCtrl is avoided because wxX11/wxUniversal renders
+// it poorly.
 // ─────────────────────────────────────────────────────────────────────
 
 class OutputPane : public wxScrolledWindow {
@@ -58,10 +208,23 @@ public:
         SetScrollbars(8, 14, 0, 0);
     }
 
+    // Plain-text convenience: build a single-span line in the default
+    // colour. Used for our local UI banners and command echoes.
     void AppendLine(const wxString & s) {
-        m_lines.push_back(s);
+        std::vector<AnsiSpan> line;
+        AnsiSpan span;
+        span.text = s;
+        span.fg   = wxColour(0xC0, 0xC0, 0xC0);
+        span.bold = false;
+        line.push_back(std::move(span));
+        AppendStyledLine(std::move(line));
+    }
+
+    void AppendStyledLine(std::vector<AnsiSpan> && spans) {
+        m_lines.push_back(std::move(spans));
         if (m_lines.size() > 5000) m_lines.erase(m_lines.begin());
-        SetVirtualSize(wxDefaultCoord, static_cast<int>(m_lines.size()) * LineHeight());
+        SetVirtualSize(wxDefaultCoord,
+                       static_cast<int>(m_lines.size()) * LineHeight());
         Refresh();
     }
 
@@ -73,16 +236,32 @@ private:
         DoPrepareDC(dc);
         dc.SetBackground(wxBrush(wxColour(0, 0, 0)));
         dc.Clear();
-        dc.SetTextForeground(wxColour(0xC0, 0xC0, 0xC0));
         dc.SetFont(m_font);
         const int lh = LineHeight();
+
         for (std::size_t i = 0; i < m_lines.size(); ++i) {
-            dc.DrawText(m_lines[i], 4, static_cast<int>(i) * lh + 1);
+            const auto & line = m_lines[i];
+            const int y = static_cast<int>(i) * lh + 1;
+            int x = 4;
+            for (const AnsiSpan & span : line) {
+                if (span.text.IsEmpty()) continue;
+                dc.SetTextForeground(span.fg);
+                if (span.bold) {
+                    wxFont bf = m_font;
+                    bf.MakeBold();
+                    dc.SetFont(bf);
+                } else {
+                    dc.SetFont(m_font);
+                }
+                dc.DrawText(span.text, x, y);
+                wxSize sz = dc.GetTextExtent(span.text);
+                x += sz.GetWidth();
+            }
         }
     }
 
-    std::vector<wxString> m_lines;
-    wxFont m_font;
+    std::vector<std::vector<AnsiSpan>> m_lines;
+    wxFont                              m_font;
 
     wxDECLARE_EVENT_TABLE();
 };
@@ -238,14 +417,12 @@ private:
                 sock->Read(buf, sizeof(buf));
                 const std::size_t n = sock->LastCount();
                 if (n == 0) break;
-                m_lineBuf.append(buf, n);
-                std::string::size_type pos;
-                while ((pos = m_lineBuf.find('\n')) != std::string::npos) {
-                    std::string line = m_lineBuf.substr(0, pos);
-                    if (!line.empty() && line.back() == '\r') line.pop_back();
-                    m_output->AppendLine(wxString::FromUTF8(line.c_str(), line.size()));
-                    m_lineBuf.erase(0, pos + 1);
-                }
+                // Feed bytes through the ANSI/IAC parser; emit a
+                // styled line (vector<AnsiSpan>) for each '\n' boundary.
+                m_parser.Feed(buf, n,
+                    [this](std::vector<AnsiSpan> && spans) {
+                        m_output->AppendStyledLine(std::move(spans));
+                    });
                 break;
             }
             case wxSOCKET_LOST:
@@ -285,11 +462,11 @@ private:
         m_input->Clear();
     }
 
-    OutputPane *     m_output{nullptr};
-    wxTextCtrl *     m_input{nullptr};
-    wxSocketClient * m_socket{nullptr};
-    std::string      m_lineBuf;       // partial line accumulator (server side)
-    wxString         m_lastHostPort;  // remember last destination
+    OutputPane *      m_output{nullptr};
+    wxTextCtrl *      m_input{nullptr};
+    wxSocketClient *  m_socket{nullptr};
+    AnsiTelnetParser  m_parser;        // server-side ANSI / telnet parser
+    wxString          m_lastHostPort;  // remember last destination
 
     wxDECLARE_EVENT_TABLE();
 };
