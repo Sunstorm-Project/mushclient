@@ -147,7 +147,89 @@ NOT YET CLASSIFIED:
 * `spell/*.cpp` — spellcheck. Likely DELETE (use hunspell directly
   if needed; the scripting/ directory may already integrate it).
 
-## Compile pass / fail tally (top-level KEEP+SHIM .cpp files, as of 2026-05-05 16:30)
+## Compile pass / fail tally (top-level KEEP+SHIM .cpp files, as of 2026-05-05 18:30)
+
+After 9 shim iterations the grind hit a structural blocker. Status:
+
+PASSING (5/18): **Color.cpp, Dmetaph.cpp, Replace.cpp, format.cpp,
+mcdatetime.cpp**. These are self-contained algorithm files that don't
+include doc.h. They cross-compile cleanly to SPARC `.o` files.
+
+FAILING (13/18): every file that includes `doc.h` (directly or via
+`mainfrm.h`). The blocker is doc.h's include list:
+
+```
+#include "worldsock.h"
+#include "chatsock.h"
+#include "chatlistensock.h"
+#include "dialogs/ColourComboBox.h"
+#include "dialogs/world_prefs/prefspropertypages.h"
+#include "TimerWnd.h"
+#include "xml/xmlparse.h"
+#include "paneline.h"
+#include "miniwindow.h"
+#include "plugins.h"
+#include "version.h"
+```
+
+Half of these are on the DELETE list (dialogs, paneline, miniwindow,
+TimerWnd) — they pull in CDC/CView/CDialog and won't compile through
+the shim. The clean fix is a structural port-time edit to doc.h:
+split CMUSHclientDoc into a non-GUI core (triggers, aliases, timers,
+output buffer, plugin state) and a GUI adapter that lives only in the
+wxWidgets shell. Most of the 13 failing files only need the non-GUI
+core, so they'd compile against `port/doc_core.h`.
+
+Estimate: 1-2 days to do the doc.h split cleanly, vs. another
+2-3 days of whack-a-mole shimming individual GUI headers. The split
+is the right move.
+
+### Outstanding individual blockers (not doc.h-related)
+
+* **`MDITabs.h:39`** — `expected class-name before '{'` — derives from
+  some MFC type the shim hasn't named yet. Goes away with the GUI
+  delete pass.
+* **`NameGeneration.cpp:33`** — references global `App.m_strDefault…`.
+  Either expose a port-side App stub with the field set from the
+  command line, or refactor `ReadNames()` to take the path as an arg.
+* **`exceptions.cpp:36`** — `SUBLANG_SYS_DEFAULT` not in shim. Trivial.
+
+### Shim coverage (mfc_shim.h, ≈900 lines after iter 9)
+
+CString (full), CTime/CTimeSpan, CRect/CPoint/CSize, CObject,
+CException/CFileException/CMemoryException/CSystemException (forward
+decl), CFile/CStdioFile, CMapBase/CMapStringToString/CMapStringToPtr,
+CList/CTypedPtrList<BASE,T>/CPtrList, CStringArray, CWinApp /
+CWinThread / CCmdTarget / CWnd / CView / CDocument / CDialog /
+CFrameWnd / CMDIChildWnd / CMDIFrameWnd / CMultiDocTemplate /
+CSingleDocTemplate / CDocTemplate / CCmdUI / CScrollView / CFormView
+(empty bases), CDC / CGdiObject / CBitmap / CBrush / CPen / CFont /
+CPalette / CRgn / CPaintDC / CClientDC / CMetaFileDC / CImageList,
+CStatusBar / CToolBar / CSplitterWnd / CButton / CEdit / CListBox /
+CComboBox / CStatic, CSocket / CAsyncSocket, CCriticalSection,
+CRuntimeClass, CFormat (forward decl).
+
+Win32 PODs: MSG / POINT / RECT / SIZE / LARGE_INTEGER / SYSTEMTIME /
+SOCKADDR_IN / SOCKADDR / IN_ADDR. Typedefs: BOOL, BYTE, WORD, DWORD,
+LONG, ULONG, UINT, LONGLONG, ULONGLONG, LPSTR, LPCSTR, LPVOID, LPCVOID,
+LPBYTE, PUINT/PDWORD/PBYTE/PWORD, WPARAM/LPARAM/LRESULT/ATOM, COLORREF,
+HANDLE/HWND/HINSTANCE/HFONT/HICON/HCURSOR/HMENU/HBRUSH/HBITMAP/HMODULE
+/HRESULT, SOCKET, DATE.
+
+Win32 helpers: AfxMessageBox, AfxIsValidString/Address, AfxGetApp/
+MainWnd/InstanceHandle, RGB/GetRValue/GetGValue/GetBValue, FormatMessage
+/ FormatMessageA, GetLastError/SetLastError, LocalFree, GetLocalTime/
+GetSystemTime, QueryPerformanceFrequency/Counter, GetTickCount.
+
+Macros: ASSERT/VERIFY/ASSERT_VALID/TRACE0/1/2/3, DECLARE_DYNAMIC/
+DYNCREATE/SERIAL, IMPLEMENT_DYNAMIC/DYNCREATE/SERIAL,
+DECLARE_MESSAGE_MAP, BEGIN/END_MESSAGE_MAP, ON_*, RGB, afx_msg.
+
+POSIX bridge: process.h shim → unistd.h with `_getpid` → `getpid`,
+direct.h shim → unistd.h + sys/stat.h with `_chdir`/`_mkdir`/`_getcwd`
+/`_rmdir` aliases, FORMAT_MESSAGE_* constants → strerror(3).
+
+
 
 Shim covers: CString (full), CTime/CTimeSpan, CRect/CPoint/CSize,
 CObject/CException/CFileException/CMemoryException/CSystemException

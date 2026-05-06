@@ -2,6 +2,7 @@
 //
 
 #include "stdafx.h"
+#include "exceptions.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW

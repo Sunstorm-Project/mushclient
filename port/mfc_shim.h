@@ -54,6 +54,19 @@
 #define _getpid getpid
 #include <unistd.h>     // getpid + friends, replaces <process.h>
 
+// Network typedefs — Win32 uses SOCKADDR_IN / SOCKADDR (uppercase
+// typedef of struct sockaddr_in / sockaddr). POSIX provides the
+// struct directly, so alias.
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+using SOCKADDR_IN = struct sockaddr_in;
+using SOCKADDR    = struct sockaddr;
+using IN_ADDR     = struct in_addr;
+using SOCKET      = int;
+#define INVALID_SOCKET (-1)
+#define SOCKET_ERROR   (-1)
+
 #include <cassert>
 #include <cstdarg>
 #include <cstddef>
@@ -62,11 +75,15 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <time.h>      // clock_gettime / struct timespec for QueryPerformance* shim
+#include <cerrno>
 #include <chrono>
 #include <exception>
 #include <string>
 #include <vector>
 #include <map>
+#include <set>
+#include <utility>
 #include <list>
 #include <algorithm>
 
@@ -77,6 +94,17 @@
 // behaviour without the preprocessor footgun.
 using std::min;
 using std::max;
+
+// MUSHclient's headers use unqualified `string`/`vector`/`map` etc.
+// (the Windows build presumably had `using namespace std;` via the
+// MFC umbrella). Pull the most-used std types into ::scope so the
+// existing source compiles without sprinkling std:: prefixes.
+using std::string;
+using std::vector;
+using std::map;
+using std::list;
+using std::set;
+using std::pair;
 
 // ─────────────────────────────────────────────────────────────────────
 // Win32 type aliases (the subset actually referenced in MUSHclient
@@ -98,6 +126,18 @@ using LPCSTR   = const char *;
 using LPVOID   = void *;
 using LPCVOID  = const void *;
 using LPBYTE   = BYTE *;
+using PUINT    = UINT *;
+using PDWORD   = DWORD *;
+using PBYTE    = BYTE *;
+using PWORD    = WORD *;
+
+// Win32 message-handler scalars. WPARAM / LPARAM are the message
+// payload words; LRESULT is the return type of every message handler.
+// On 32-bit SPARC: same widths as on 32-bit Windows.
+using WPARAM   = std::uintptr_t;
+using LPARAM   = std::intptr_t;
+using LRESULT  = std::intptr_t;
+using ATOM     = WORD;
 
 using HANDLE    = void *;
 using HWND      = void *;
@@ -606,6 +646,10 @@ class CMemoryException : public CException {};
   #define TRACE3(s, a, b, c)  std::fprintf(stderr, (s), (a), (b), (c))
 #endif
 
+// MFC message-map markers — `afx_msg` annotates virtual methods that
+// participate in the message map. No-op on the port.
+#define afx_msg
+
 // Unused-on-Solaris macros that show up in MFC sources we keep.
 #define DECLARE_DYNAMIC(cls)
 #define DECLARE_DYNCREATE(cls)
@@ -638,6 +682,11 @@ inline int AfxMessageBox(const char * msg, UINT /*type*/ = 0, UINT /*helpid*/ = 
     if (msg) std::fprintf(stderr, "[AfxMessageBox] %s\n", msg);
     return 1;   // IDOK
 }
+// AfxIsValidString — MFC's "is this a non-null, non-corrupt char*?"
+// debug helper. Treat any non-null pointer as valid; the port doesn't
+// chase null pointer reads in the same way.
+inline BOOL AfxIsValidString(const char * s, int /*len*/ = -1) { return s ? TRUE : FALSE; }
+inline BOOL AfxIsValidAddress(const void * p, UINT /*nBytes*/, BOOL /*bReadWrite*/ = TRUE) { return p ? TRUE : FALSE; }
 inline int AfxMessageBox(UINT /*string_id*/, UINT /*type*/ = 0, UINT /*helpid*/ = 0) {
     std::fprintf(stderr, "[AfxMessageBox] (string-id resource lookup not implemented)\n");
     return 1;
@@ -681,6 +730,37 @@ class CScrollView: public CView {};
 class CFormView  : public CView {};
 class CCmdUI     : public CObject {};
 class CRuntimeClass {};
+class CDocTemplate : public CCmdTarget {};
+class CMultiDocTemplate : public CDocTemplate {
+public:
+    CMultiDocTemplate(UINT /*id*/, CRuntimeClass * /*doc*/, CRuntimeClass * /*frame*/, CRuntimeClass * /*view*/) {}
+};
+class CSingleDocTemplate : public CDocTemplate {};
+
+// Drawing primitives — empty bases for type-checking. Real GUI code
+// is rewritten to wxDC etc., not these.
+class CDC      : public CObject {};
+class CGdiObject : public CObject {};
+class CBitmap  : public CGdiObject {};
+class CBrush   : public CGdiObject {};
+class CPen     : public CGdiObject {};
+class CFont    : public CGdiObject {};
+class CPalette : public CGdiObject {};
+class CRgn     : public CGdiObject {};
+class CPaintDC : public CDC {};
+class CClientDC: public CDC {};
+class CMetaFileDC: public CDC {};
+class CImageList : public CObject {};
+
+// Common Controls / Dialog basics — referenced by header chains.
+class CStatusBar : public CWnd {};
+class CToolBar   : public CWnd {};
+class CSplitterWnd : public CWnd {};
+class CButton    : public CWnd {};
+class CEdit      : public CWnd {};
+class CListBox   : public CWnd {};
+class CComboBox  : public CWnd {};
+class CStatic    : public CWnd {};
 class CSocket : public CObject {};
 class CAsyncSocket : public CObject {};
 class CCriticalSection {
@@ -689,11 +769,21 @@ public:
     void Unlock() {}
 };
 
-// CFormat is defined IN-TREE at format.cpp/format.h — we just need
-// a forward decl here since some headers reference it. Likewise
-// CSystemException at exceptions.cpp/exceptions.h.
+// CFormat / CSystemException have their full definitions in the
+// in-tree format.h / exceptions.h. format.cpp / exceptions.cpp now
+// pull those in explicitly; everywhere else (headers that mention
+// the type by name) takes the forward decl.
 class CFormat;
 class CSystemException;
+
+// CmcDateTime / CmcDateTimeSpan are defined in the in-tree mcdatetime.h.
+// MUSHclient code occasionally pokes COleDateTime* in places that
+// would otherwise drag in <afxdisp.h>; alias both to MUSHclient's
+// own classes so the type names line up.
+class CmcDateTime;
+class CmcDateTimeSpan;
+using COleDateTime     = CmcDateTime;
+using COleDateTimeSpan = CmcDateTimeSpan;
 
 // MSG — Win32 message struct. PreTranslateMessage references it in
 // every CWnd-derived class declaration. The MUSHclient port deletes
@@ -718,6 +808,65 @@ union LARGE_INTEGER {
     struct { DWORD LowPart; LONG HighPart; };
     LONGLONG QuadPart;
 };
+
+// SYSTEMTIME — Win32 broken-down time struct. Same idea as struct
+// std::tm, but with field order/widths that GetLocalTime / SetLocalTime
+// pin down. Provide the struct + GetLocalTime stub for mcdatetime.cpp.
+struct SYSTEMTIME {
+    WORD wYear;
+    WORD wMonth;
+    WORD wDayOfWeek;
+    WORD wDay;
+    WORD wHour;
+    WORD wMinute;
+    WORD wSecond;
+    WORD wMilliseconds;
+};
+inline void GetLocalTime(SYSTEMTIME * st) {
+    if (!st) return;
+    struct timespec ts{};
+    clock_gettime(CLOCK_REALTIME, &ts);
+    std::tm tm{};
+    std::tm * p = std::localtime(&ts.tv_sec);
+    if (p) tm = *p;
+    st->wYear         = static_cast<WORD>(tm.tm_year + 1900);
+    st->wMonth        = static_cast<WORD>(tm.tm_mon + 1);
+    st->wDayOfWeek    = static_cast<WORD>(tm.tm_wday);
+    st->wDay          = static_cast<WORD>(tm.tm_mday);
+    st->wHour         = static_cast<WORD>(tm.tm_hour);
+    st->wMinute       = static_cast<WORD>(tm.tm_min);
+    st->wSecond       = static_cast<WORD>(tm.tm_sec);
+    st->wMilliseconds = static_cast<WORD>(ts.tv_nsec / 1000000);
+}
+inline void GetSystemTime(SYSTEMTIME * st) { GetLocalTime(st); }   // close enough for the port
+
+// Win32 message-base + a small handful of constants the codebase
+// references directly. WM_APP marks user-defined messages above
+// 0x8000; MUSHclient builds custom message IDs from it.
+#define WM_APP    0x8000
+#define WM_USER   0x0400
+
+// QueryPerformanceFrequency / QueryPerformanceCounter — Win32 high-
+// resolution timer. Map to clock_gettime(CLOCK_MONOTONIC). Frequency
+// is reported as nanoseconds-per-second since clock_gettime returns
+// nanoseconds, so QPF returns 1e9 and QPC returns ns since epoch.
+inline BOOL QueryPerformanceFrequency(LARGE_INTEGER * f) {
+    if (!f) return FALSE;
+    f->QuadPart = 1000000000LL;
+    return TRUE;
+}
+inline BOOL QueryPerformanceCounter(LARGE_INTEGER * c) {
+    if (!c) return FALSE;
+    struct timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    c->QuadPart = static_cast<LONGLONG>(ts.tv_sec) * 1000000000LL + ts.tv_nsec;
+    return TRUE;
+}
+inline DWORD GetTickCount() {
+    struct timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<DWORD>(ts.tv_sec * 1000ULL + ts.tv_nsec / 1000000ULL);
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // CFile / CStdioFile — minimal wrapper around fopen/fclose. CArchive
@@ -870,5 +1019,91 @@ public:
 
 template <typename T>
 using CTypedPtrList_PtrList = CList<T *>;
+
+// CPtrList — generic MFC pointer list, used as the BASE_CLASS argument
+// to CTypedPtrList<BASE_CLASS, T> typedefs. We just need the type to
+// exist; the template specialization below ignores the BASE_CLASS arg.
+class CPtrList : public CObject {};
+
+// CTypedPtrList<BASE_CLASS, T> — the canonical MFC signature.
+// MUSHclient typedefs typically read:
+//   typedef CTypedPtrList<CPtrList, CFoo*> CFooList;
+// We accept any base and back the storage with std::list<T>.
+template <class BASE_CLASS, class T>
+class CTypedPtrList : public BASE_CLASS {
+public:
+    std::list<T> m_list;
+    int  GetCount() const     { return static_cast<int>(m_list.size()); }
+    BOOL IsEmpty()  const     { return m_list.empty() ? TRUE : FALSE; }
+    void AddHead(const T & v) { m_list.push_front(v); }
+    void AddTail(const T & v) { m_list.push_back(v); }
+    T    RemoveHead()         { T v = m_list.front(); m_list.pop_front(); return v; }
+    T    RemoveTail()         { T v = m_list.back();  m_list.pop_back();  return v; }
+    void RemoveAll()          { m_list.clear(); }
+    T &  GetHead()            { return m_list.front(); }
+    T &  GetTail()            { return m_list.back(); }
+};
+
+// CStringArray — std::vector<CString> wrapper. ~Half a dozen call
+// sites in NameGeneration.cpp + the names/ directory.
+class CStringArray {
+public:
+    std::vector<CString> m_arr;
+
+    int  GetSize() const                     { return static_cast<int>(m_arr.size()); }
+    int  GetCount() const                    { return static_cast<int>(m_arr.size()); }
+    BOOL IsEmpty() const                     { return m_arr.empty() ? TRUE : FALSE; }
+    void RemoveAll()                         { m_arr.clear(); }
+    void Add(const CString & s)              { m_arr.push_back(s); }
+    void SetAtGrow(int i, const CString & s) {
+        if (static_cast<std::size_t>(i) >= m_arr.size())
+            m_arr.resize(static_cast<std::size_t>(i) + 1);
+        m_arr[i] = s;
+    }
+    void SetAt(int i, const CString & s)     { m_arr[i] = s; }
+    void RemoveAt(int i)                     { m_arr.erase(m_arr.begin() + i); }
+    CString &       operator[](int i)        { return m_arr[i]; }
+    const CString & operator[](int i) const  { return m_arr[i]; }
+    CString &       GetAt(int i)             { return m_arr[i]; }
+    const CString & GetAt(int i) const       { return m_arr[i]; }
+};
+
+// DATE — Win32 OLE date/time = double-encoded (days since 1899-12-30).
+// MUSHclient's mcdatetime.cpp passes DATE& around when interfacing
+// with the OS automation layer; on the port it's just a double.
+using DATE = double;
+
+// FormatMessage — Win32 system error → human string. The MUSHclient
+// usage in exceptions.cpp formats GetLastError() output; on the port
+// we route to strerror(3). Constants are stubs; FormatMessageA is a
+// thin shim that fills the buffer.
+#define FORMAT_MESSAGE_ALLOCATE_BUFFER 0x00000100
+#define FORMAT_MESSAGE_FROM_SYSTEM     0x00001000
+#define FORMAT_MESSAGE_IGNORE_INSERTS  0x00000200
+#define FORMAT_MESSAGE_FROM_HMODULE    0x00000800
+#define LANG_NEUTRAL                   0x00
+#define SUBLANG_DEFAULT                0x01
+#define MAKELANGID(p, s)               ((WORD)(((WORD)(s) << 10) | (WORD)(p)))
+
+inline DWORD FormatMessageA(
+    DWORD /*dwFlags*/, LPCVOID /*lpSource*/, DWORD dwMessageId,
+    DWORD /*dwLanguageId*/, LPSTR lpBuffer, DWORD nSize,
+    void * /*Arguments*/ = nullptr)
+{
+    if (!lpBuffer || nSize == 0) return 0;
+    const char * msg = std::strerror(static_cast<int>(dwMessageId));
+    std::strncpy(lpBuffer, msg ? msg : "", nSize);
+    lpBuffer[nSize - 1] = '\0';
+    return static_cast<DWORD>(std::strlen(lpBuffer));
+}
+#define FormatMessage FormatMessageA
+
+// LocalFree — Win32 heap free; FormatMessage with ALLOCATE_BUFFER
+// stashes the buffer pointer and the caller frees it via LocalFree.
+inline void * LocalFree(void * p) { std::free(p); return nullptr; }
+
+// GetLastError — Win32 thread-local error code. We map to errno.
+inline DWORD GetLastError() { return static_cast<DWORD>(errno); }
+inline void  SetLastError(DWORD code) { errno = static_cast<int>(code); }
 
 #endif // MFC_SHIM_H

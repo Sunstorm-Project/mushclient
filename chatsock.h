@@ -4,6 +4,11 @@
 #ifndef __CHATSOCK_H__
 #define __CHATSOCK_H__
 
+// SHS_INFO (SHA hashing struct used by m_shsInfo) lives in
+// scripting/shs.h. The Windows MFC build picked it up via the PCH;
+// SPARC port doesn't have a PCH, so include it explicitly.
+#include "scripting/shs.h"
+
 class CMUSHclientDoc;
 
 // if an identical message is received, that we just sent, that are the same,

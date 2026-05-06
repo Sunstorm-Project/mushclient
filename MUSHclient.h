@@ -39,6 +39,15 @@
   #include <dsound.h>
 #endif
 
+// SPARC Solaris 7 port: everything below this point is the
+// CMUSHclientApp class and the CWinApp-rooted singleton infrastructure.
+// The port doesn't yet have an adapter, and most KEEP+SHIM .cpp files
+// don't actually reach into CMUSHclientApp's fields directly — they
+// use AfxGetApp() which the shim returns nullptr from. Skip the entire
+// declaration on the port build to dodge the OtherTypes.h /
+// COleTemplateServer / CMultiDocTemplate-membered class layout.
+#ifndef __SPARC_SOLARIS7_PORT__
+
 /////////////////////////////////////////////////////////////////////////////
 // CMUSHclientApp:
 // See MUSHclient.cpp for the implementation of this class
@@ -375,5 +384,7 @@ typedef struct
   char * pName;      // name, eg. "AsciiArtFont"
   const char * sDefault;   // original (default) value
   }  tGlobalConfigurationAlphaOption;
+
+#endif // !__SPARC_SOLARIS7_PORT__
 
 
