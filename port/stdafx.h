@@ -22,10 +22,28 @@
 #include <cfloat>
 #include <string>
 #include <vector>
+#include <deque>
 #include <map>
 #include <list>
 #include <set>
+#include <sstream>
+#include <iostream>
 #include <algorithm>
+
+// MUSHclient sources use unqualified `deque<string>`, `string`, etc.
+// They relied on `using namespace std;` at the top of the original
+// stdafx.h. We pull the most-used names into the global namespace
+// here rather than `using namespace std;` so we don't shadow names
+// that the shim defines (CString, CTime, ...).
+// MUSHclient code (Gammon) was written against MFC's stdafx.h umbrella
+// which transitively did `using namespace std;` — every .cpp uses
+// unqualified `string`, `vector`, `deque`, `ostringstream`, `boolalpha`,
+// `count`, `find`, etc. Replicating each `using` individually is
+// whack-a-mole; just import the namespace globally here so all the
+// MFC sources compile 1:1. This shadows nothing in the shim because
+// the shim's MFC types live in the global namespace as `class CString`,
+// `class CTime`, etc — std doesn't have those names.
+using namespace std;
 
 #include "mfc_shim.h"
 
@@ -125,6 +143,40 @@
 // to exist. Real sqlite3 will plug in when the prefs DB lands.
 struct sqlite3;
 struct sqlite3_stmt;
+
+// DirectSound — Windows-only sound API. doc.h has
+// `LPDIRECTSOUNDBUFFER m_pDirectSoundSecondaryBuffer[MAX_SOUND_BUFFERS]`.
+// We can't link DirectSound on Solaris 7; the long-term plan is
+// SDL2_mixer or libao. For now, define LPDIRECTSOUNDBUFFER as an
+// opaque pointer so the array compiles. Code paths that actually
+// touch m_pDirectSoundSecondaryBuffer get conditioned out at port
+// time.
+struct IDirectSoundBuffer;
+typedef IDirectSoundBuffer * LPDIRECTSOUNDBUFFER;
+struct IDirectSound;
+typedef IDirectSound * LPDIRECTSOUND;
+#define MAX_SOUND_BUFFERS 10
+
+// Additional Win32 typedefs that doc.h pokes at directly (beyond the
+// HFONT/HMENU/HICON/HBITMAP/LARGE_INTEGER/DISPID/BSTR set already in
+// mfc_shim.h):
+typedef void * HACCEL;          // accelerator-table handle (MFC LoadAccelerators)
+
+// COM Automation — mfc_shim.h already provides DISPID / BSTR / WORD /
+// UINT / GUID / REFIID. doc.h's plugin invocation signatures further
+// reference VARIANT / DISPPARAMS / EXCEPINFO / LCID / COleVariant by
+// pointer or reference; stub the rest so the signatures compile.
+// The plugin/IDispatch path is conditioned out at port time in
+// favour of Lua-only plugins (see PORT_STATUS).
+struct VARIANT;
+struct DISPPARAMS;
+struct EXCEPINFO;
+typedef IDispatch * LPDISPATCH;     // mfc_shim defines `using IDispatch = void`
+struct IUnknown;
+typedef IUnknown * LPUNKNOWN;
+typedef unsigned long LCID;
+class COleVariant;            // forward decl — defined in MFC OLE; doc.h uses by-pointer
+class CWaitCursor { public: CWaitCursor() {} ~CWaitCursor() {} void Restore() {} };
 
 // MUSHclient writes `struct compare_plugin_name : binary_function<...>`
 // (no `std::` qualifier) — relies on a `using namespace std;` upstream
@@ -261,5 +313,69 @@ public:
     bool     m_bRepeatOnSameLine;
     std::list<std::pair<int, int> > m_MatchesOnLine;
 };
+
+// ─────────────────────────────────────────────────────────────────────
+// MUSHclient ANSI-code constants. Original lives in
+// stdafx.h.windows-original line 538+; copied verbatim here so that
+// ansi.cpp and friends see the named cases without relying on the
+// pre-port stdafx.h.
+// ─────────────────────────────────────────────────────────────────────
+
+#define ANSI_RESET             0
+#define ANSI_BOLD              1
+#define ANSI_BLINK             3
+#define ANSI_UNDERLINE         4
+#define ANSI_SLOW_BLINK        5
+#define ANSI_FAST_BLINK        6
+#define ANSI_INVERSE           7
+#define ANSI_STRIKEOUT         9
+#define ANSI_CANCEL_BOLD      22
+#define ANSI_CANCEL_BLINK     23
+#define ANSI_CANCEL_UNDERLINE 24
+#define ANSI_CANCEL_SLOW_BLINK  25
+#define ANSI_CANCEL_INVERSE   27
+#define ANSI_CANCEL_STRIKEOUT 29
+#define ANSI_TEXT_BLACK       30
+#define ANSI_TEXT_RED         31
+#define ANSI_TEXT_GREEN       32
+#define ANSI_TEXT_YELLOW      33
+#define ANSI_TEXT_BLUE        34
+#define ANSI_TEXT_MAGENTA     35
+#define ANSI_TEXT_CYAN        36
+#define ANSI_TEXT_WHITE       37
+#define ANSI_TEXT_256_COLOUR  38
+#define ANSI_SET_FOREGROUND_DEFAULT 39
+#define ANSI_BACK_BLACK       40
+#define ANSI_BACK_RED         41
+#define ANSI_BACK_GREEN       42
+#define ANSI_BACK_YELLOW      43
+#define ANSI_BACK_BLUE        44
+#define ANSI_BACK_MAGENTA     45
+#define ANSI_BACK_CYAN        46
+#define ANSI_BACK_WHITE       47
+#define ANSI_BACK_256_COLOUR  48
+#define ANSI_SET_BACKGROUND_DEFAULT 49
+
+// ─────────────────────────────────────────────────────────────────────
+// Port-side externs that MUSHclient sources expect to be in scope
+// after stdafx.h. The actual definitions live in port/wx/main.cpp and
+// the future doc-core port files.
+// ─────────────────────────────────────────────────────────────────────
+
+class CMUSHclientApp;
+extern CMUSHclientApp App;     // port-side singleton (mirrors theApp on Windows)
+
+// MUSHclient's UMessageBox is a unicode-aware wrapper around
+// AfxMessageBox; here we just funnel through AfxMessageBox.
+inline int UMessageBox(LPCTSTR s, UINT type = 0, UINT helpid = 0) {
+    return AfxMessageBox(s, type, helpid);
+}
+inline int UMessageBox(const CString & s, UINT type = 0, UINT helpid = 0) {
+    return AfxMessageBox((LPCTSTR)s, type, helpid);
+}
+
+// InitZlib lives in MUSHclient.cpp. Forward-decl so worldsock /
+// telnet_phases see it before their own use sites.
+int InitZlib(z_stream & strm);
 
 #endif

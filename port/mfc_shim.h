@@ -728,6 +728,29 @@ class CMemoryException : public CException {};
 #define ON_WM_SIZE()
 #define ON_WM_PAINT()
 
+// MFC OLE / IDispatch dispatch-map markers. CMUSHclientDoc's
+// scripting bridge declares DECLARE_DISPATCH_MAP / DECLARE_INTERFACE_MAP
+// so that VBScript / JScript can call doc methods. The SPARC port
+// drops the WSH path; stub these so the class still parses.
+#define DECLARE_DISPATCH_MAP()
+#define DECLARE_INTERFACE_MAP()
+#define DECLARE_OLECREATE(cls)
+#define BEGIN_DISPATCH_MAP(cls, base)   void cls::__dispatch_map_unused__()
+#define END_DISPATCH_MAP()
+#define BEGIN_INTERFACE_MAP(cls, base)  void cls::__interface_map_unused__()
+#define END_INTERFACE_MAP()
+#define INTERFACE_PART(cls, iid, name)
+#define DISP_FUNCTION(cls, ext, mfn, vt, vts)
+#define DISP_FUNCTION_ID(cls, ext, dispid, mfn, vt, vts)
+#define DISP_PROPERTY(cls, ext, mvar, vt)
+#define DISP_PROPERTY_EX(cls, ext, mget, mset, vt)
+#define DISP_PROPERTY_ID(cls, ext, dispid, mvar, vt)
+#define DISP_PROPERTY_EX_ID(cls, ext, dispid, mget, mset, vt)
+#define DISP_DEFVALUE(cls, ext)
+#define IMPLEMENT_DISPATCH_MAP(cls, base)
+#define IMPLEMENT_INTERFACE_MAP(cls, base)
+#define IMPLEMENT_OLECREATE(cls, ext, l, w1, w2, b1, b2, b3, b4, b5, b6, b7, b8)
+
 // ─────────────────────────────────────────────────────────────────────
 // Afx* convenience entry points. The caller-visible behaviour here is
 // minimal — a real wxWidgets shell will route AfxMessageBox →
@@ -750,6 +773,16 @@ inline int AfxMessageBox(UINT /*string_id*/, UINT /*type*/ = 0, UINT /*helpid*/ 
 inline class CWinApp * AfxGetApp()      { return nullptr; }
 inline HWND  AfxGetMainWnd()            { return nullptr; }
 inline HINSTANCE AfxGetInstanceHandle() { return nullptr; }
+
+// MFC exception-throwers used in a couple of internal places:
+inline void AfxThrowMemoryException()   { throw CMemoryException(); }
+inline void AfxThrowFileException(int /*cause*/ = -1, long /*lOsError*/ = -1,
+                                  const char * /*lpszFileName*/ = nullptr) {
+    throw CFileException();
+}
+inline void AfxThrowResourceException() { throw CException(); }
+inline void AfxThrowNotSupportedException() { throw CException(); }
+inline void AfxThrowInvalidArgException()   { throw CException(); }
 
 // CWinApp / CWnd / CCmdTarget — empty bases so MUSHclient.h's
 // `class CMUSHclientApp : public CWinApp` compiles. The real

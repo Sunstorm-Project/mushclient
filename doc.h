@@ -23,10 +23,33 @@ class CMiniWindow;
 class CColourComboBox;
 class CWorldPrefsPropertyPages;
 class CMUSHclientDoc;          // forward decl for OtherTypes.h's CTrigger/CAlias members
+// Per-page world-preferences dialog classes — referenced by doc.h's
+// LoadPrefsP1..LoadPrefsP23 / SavePrefsP1..SavePrefsP23 method
+// signatures. These are CPropertyPage subclasses; under the SPARC
+// port we forward-declare them here so doc.h's signatures compile,
+// and the GUI implementations live behind dialogs/*.cpp which are on
+// the DELETE list (replaced by wxDialog at port time).
+class CPrefsP1; class CPrefsP2; class CPrefsP3; class CPrefsP4;
+class CPrefsP5; class CPrefsP6; class CPrefsP7; class CPrefsP8;
+class CPrefsP9; class CPrefsP10; class CPrefsP11; class CPrefsP12;
+class CPrefsP13; class CPrefsP14; class CPrefsP15; class CPrefsP16;
+class CPrefsP17; class CPrefsP18; class CPrefsP19; class CPrefsP20;
+class CPrefsP21; class CPrefsP22; class CPrefsP23;
+class CPrefsGP1; class CPrefsGP2; class CPrefsGP3; class CPrefsGP4;
+class CPrefsGP5; class CPrefsGP6; class CPrefsGP7; class CPrefsGP8;
+class CPrefsGP9; class CPrefsGP10;
+// miniwindow.h defines these typedefs; their definitions only need a
+// forward-declared CMiniWindow* and standard containers, so we can
+// hoist them here and skip the rest of miniwindow.h (which inherits
+// from CWnd and pulls in MFC GUI bases).
+typedef map<string, CMiniWindow *> MiniWindowMap;
+typedef MiniWindowMap::iterator MiniWindowMapIterator;
+typedef vector<pair<string, CMiniWindow *> > MiniWindowVector;
 #include "regexp.h"           // t_regexp, MAX_WILDCARDS — needed by OtherTypes.h
 #include "mcdatetime.h"       // CmcDateTime — held by-value in CTimer
 #include "xml/xmlparse.h"     // CXMLelement, CAttribute — used in many method sigs
 #include "OtherTypes.h"       // CTrigger / CAlias / CTimer / CVariable / etc + their maps
+#include "paneline.h"         // CPaneStyle / CPaneLine — non-GUI text+style classes
 #include "plugins.h"          // CPlugin / CPluginList — uses OtherTypes types
 #include "version.h"          // constants only
 #else
