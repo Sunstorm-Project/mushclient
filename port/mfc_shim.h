@@ -151,6 +151,22 @@ using HBITMAP   = void *;
 using HMODULE   = void *;
 using HRESULT   = LONG;
 
+// Win32 / COM compat scalars. The actual COM scripting (WSH /
+// IActiveScript path) is dropped in the SPARC port; these keep the
+// declarations referencing DISPID / __int64 / VARIANT compiling but
+// the values are inert.
+using DISPID    = LONG;
+#define DISPID_UNKNOWN  ((DISPID)-1)
+using __int64   = long long;
+using ITypeInfo = void;             // never dereferenced post-WSH-drop
+using IDispatch = void;
+using REFIID    = const struct GUID *;
+struct GUID { unsigned long d1; unsigned short d2, d3; unsigned char d4[8]; };
+struct EXCEPINFO { unsigned short wCode, wReserved; void *bstrSource, *bstrDescription, *bstrHelpFile; unsigned long dwHelpContext; void *pvReserved; void *pfnDeferredFillIn; long scode; };
+using BSTR      = wchar_t *;
+struct VARIANT { unsigned short vt; unsigned short wReserved1, wReserved2, wReserved3; union { long lVal; double dblVal; void *byref; }; };
+struct VARIANTARG : VARIANT {};
+
 using COLORREF = DWORD;
 
 #ifndef TRUE
@@ -176,6 +192,40 @@ using COLORREF = DWORD;
 #define E_FAIL          ((HRESULT)0x80004005L)
 #define SUCCEEDED(hr)   ((HRESULT)(hr) >= 0)
 #define FAILED(hr)      ((HRESULT)(hr) <  0)
+
+// Win32 NLS sublanguage IDs (winnt.h). exceptions.cpp uses
+// SUBLANG_SYS_DEFAULT for FormatMessage; the value matters only on
+// Windows. On the port we accept any constant — strerror() ignores it.
+#ifndef SUBLANG_DEFAULT
+#define SUBLANG_DEFAULT     0x01
+#define SUBLANG_SYS_DEFAULT 0x02
+#define LANG_NEUTRAL        0x00
+#endif
+
+// Win32 string-copy helpers used in exceptions.cpp + a couple other
+// places. Map to standard strncpy with explicit NUL termination.
+inline char * lstrcpyn(char * dest, const char * src, int n) {
+    if (n <= 0) return dest;
+    std::strncpy(dest, src, static_cast<std::size_t>(n) - 1);
+    dest[n - 1] = '\0';
+    return dest;
+}
+
+// ANSI palette indices. The original stdafx.h.windows-original
+// declares these as a single anonymous enum (line 191):
+//   enum { BLACK = 0, RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN, WHITE };
+// We mirror that here so MUSHclient's `iForeColour = WHITE` /
+// `m_normalcolour[BLACK]` references compile against the shim.
+enum {
+    BLACK = 0,
+    RED,
+    GREEN,
+    YELLOW,
+    BLUE,
+    MAGENTA,
+    CYAN,
+    WHITE
+};
 
 // Calling-convention macros: meaningless on SPARC, define empty so the
 // thousands of WINAPI / CALLBACK / STDMETHODCALLTYPE annotations stay valid.
@@ -509,7 +559,13 @@ private:
 class CTime {
 public:
     CTime() = default;
-    explicit CTime(std::time_t t) : m_time(t) {}
+    // MFC CTime allows `t = 0;` to mean "epoch" — int is a common
+    // value (`tWhenMatched = 0` in OtherTypes.h's CAlias ctor). Take
+    // by value, not std::time_t-only, so int literals don't error.
+    CTime(int t) : m_time(static_cast<std::time_t>(t)) {}
+    CTime(std::time_t t) : m_time(t) {}
+    CTime & operator=(int t) { m_time = static_cast<std::time_t>(t); return *this; }
+    CTime & operator=(std::time_t t) { m_time = t; return *this; }
     CTime(int year, int month, int day, int hour, int min, int sec, int /*dst*/ = -1) {
         std::tm tm{};
         tm.tm_year = year - 1900;
@@ -988,6 +1044,30 @@ public:
         return TRUE;
     }
     Value & operator[](const Key & k) { return m_map[k]; }
+
+    // MFC CMap API — InitHashTable is a no-op on std::map (it's a
+    // tree, not a hash); ports that pass a bucket-count are ignored.
+    void InitHashTable(unsigned int /*hashSize*/, BOOL = TRUE) {}
+
+    // POSITION-walk subset. POSITION on MFC is an opaque token. We
+    // back it with a heap-allocated iterator so the get/next pair
+    // can be implemented without exposing iterator state through the
+    // type system. GetNextAssoc copies key+value out and advances.
+    using POSITION_t = void *;
+    POSITION_t GetStartPosition() const {
+        if (m_map.empty()) return nullptr;
+        return new typename map_t::const_iterator(m_map.begin());
+    }
+    void GetNextAssoc(POSITION_t & rPos, Key & rKey, Value & rValue) const {
+        auto * itp = static_cast<typename map_t::const_iterator *>(rPos);
+        rKey   = (*itp)->first;
+        rValue = (*itp)->second;
+        ++(*itp);
+        if (*itp == m_map.end()) {
+            delete itp;
+            rPos = nullptr;
+        }
+    }
 };
 
 using CMapStringToString = CMapBase<std::string, std::string>;
@@ -995,6 +1075,70 @@ using CMapStringToPtr    = CMapBase<std::string, void *>;
 
 template <typename T>
 using CTypedPtrMap_StringToOb = CMapBase<std::string, T *>;
+
+// CTypedPtrMap<BASE, KEY, VALUE> — canonical MFC 3-arg signature.
+// Used primarily by xml/xmlparse.h's CAttributeMap and a couple of
+// places that map CString → some pointer. Stores via std::map<KEY,
+// VALUE> internally; ignores the BASE arg.
+template <class BASE_CLASS, class KEY, class VALUE>
+class CTypedPtrMap : public BASE_CLASS {
+public:
+    using map_t = std::map<KEY, VALUE>;
+    map_t m_map;
+
+    int  GetCount() const                     { return static_cast<int>(m_map.size()); }
+    BOOL IsEmpty() const                      { return m_map.empty() ? TRUE : FALSE; }
+    void RemoveAll()                          { m_map.clear(); }
+    BOOL RemoveKey(const KEY & k)             { return m_map.erase(k) ? TRUE : FALSE; }
+    void SetAt(const KEY & k, const VALUE & v){ m_map[k] = v; }
+    BOOL Lookup(const KEY & k, VALUE & v) const {
+        auto it = m_map.find(k);
+        if (it == m_map.end()) return FALSE;
+        v = it->second;
+        return TRUE;
+    }
+    VALUE & operator[](const KEY & k) { return m_map[k]; }
+    void InitHashTable(unsigned int /*hashSize*/, BOOL = TRUE) {}
+};
+
+// CPtrArray + CTypedPtrArray — vector counterpart to CTypedPtrMap.
+// MUSHclient typedef sites read:
+//   typedef CTypedPtrArray <CPtrArray, CFoo*> CFooArray;
+class CPtrArray : public CObject {};
+
+template <class BASE_CLASS, class T>
+class CTypedPtrArray : public BASE_CLASS {
+public:
+    std::vector<T> m_arr;
+
+    int  GetSize() const                     { return static_cast<int>(m_arr.size()); }
+    int  GetCount() const                    { return static_cast<int>(m_arr.size()); }
+    BOOL IsEmpty() const                     { return m_arr.empty() ? TRUE : FALSE; }
+    void RemoveAll()                         { m_arr.clear(); }
+    int  Add(const T & v)                    { m_arr.push_back(v); return static_cast<int>(m_arr.size()) - 1; }
+    void SetAt(int i, const T & v)           { m_arr[i] = v; }
+    void SetAtGrow(int i, const T & v) {
+        if (static_cast<std::size_t>(i) >= m_arr.size())
+            m_arr.resize(static_cast<std::size_t>(i) + 1);
+        m_arr[i] = v;
+    }
+    void RemoveAt(int i)                     { m_arr.erase(m_arr.begin() + i); }
+    T &       GetAt(int i)                   { return m_arr[i]; }
+    const T & GetAt(int i) const             { return m_arr[i]; }
+    T &       operator[](int i)              { return m_arr[i]; }
+    const T & operator[](int i) const        { return m_arr[i]; }
+};
+
+// Scripting-arrays typedefs. Used in plugins.h and doc.h:
+//   tStringMapOfMaps m_Arrays;
+// where each value is a pointer to a string→string map.  The
+// underlying types come from MUSHclient's Win32 build via some
+// header we don't have a copy of; the iterator-shape used by the
+// scripting/methods/methods_arrays.cpp call sites makes the
+// definitions unambiguous (they iterate (begin,end), call find(),
+// emplace via insert).
+typedef std::map<std::string, std::string> tStringToStringMap;
+typedef std::map<std::string, tStringToStringMap *> tStringMapOfMaps;
 
 // ─────────────────────────────────────────────────────────────────────
 // CList — std::list wrapper.

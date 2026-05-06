@@ -4,6 +4,32 @@
 
 #pragma once
 
+#ifdef __SPARC_SOLARIS7_PORT__
+// SPARC Solaris 7 port: doc.h is included by ~13 KEEP+SHIM .cpp files
+// that compile against the MFC shim. The headers replaced below pull
+// in MFC dialog hierarchies (CDialog, CPropertySheet, etc.) and
+// concrete GUI classes (CTimerWnd, CMiniWindow, CPaneLine, dialog
+// subclasses) that the shim only models as empty bases. doc.h itself
+// only uses these as pointer/reference members or method-signature
+// types, so forward declarations are sufficient. Files that need the
+// full types (doc.cpp, mainfrm.cpp, dialogs/*.cpp, mushview.cpp, ...)
+// continue to include the real headers themselves.
+class CWorldSocket;
+class CChatSocket;
+class CChatListenSocket;
+class CTimerWnd;
+class CPaneLine;
+class CMiniWindow;
+class CColourComboBox;
+class CWorldPrefsPropertyPages;
+class CMUSHclientDoc;          // forward decl for OtherTypes.h's CTrigger/CAlias members
+#include "regexp.h"           // t_regexp, MAX_WILDCARDS — needed by OtherTypes.h
+#include "mcdatetime.h"       // CmcDateTime — held by-value in CTimer
+#include "xml/xmlparse.h"     // CXMLelement, CAttribute — used in many method sigs
+#include "OtherTypes.h"       // CTrigger / CAlias / CTimer / CVariable / etc + their maps
+#include "plugins.h"          // CPlugin / CPluginList — uses OtherTypes types
+#include "version.h"          // constants only
+#else
 #include "worldsock.h"
 #include "chatsock.h"
 #include "chatlistensock.h"
@@ -15,6 +41,7 @@
 #include "miniwindow.h"
 #include "plugins.h"
 #include "version.h"
+#endif
 
 #define COMPRESS_BUFFER_LENGTH 10000   // size of decompression buffer
 extern CString MUSHCLIENT_VERSION;

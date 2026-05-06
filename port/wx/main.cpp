@@ -271,9 +271,11 @@ extern "C" {
         }
         if (!init_array || !init_array_sz) return 0;
 
-        std::fprintf(stderr, "[sst-init] %s: walking %zu init_array entries\n",
+        // Solaris 7 printf doesn't grok %zu — prints literal "zu".
+        // Cast to unsigned long and use %lu to match.
+        std::fprintf(stderr, "[sst-init] %s: walking %lu init_array entries\n",
                      info->dlpi_name && *info->dlpi_name ? info->dlpi_name : "(self)",
-                     init_array_sz);
+                     static_cast<unsigned long>(init_array_sz));
         for (std::size_t i = 0; i < init_array_sz; ++i) {
             if (init_array[i]) init_array[i](0, nullptr, nullptr);
         }
@@ -293,7 +295,8 @@ extern "C" {
         // for our wxApp etc. live here, not in any DSO).
         if (__init_array_start && __init_array_end) {
             std::size_t n = __init_array_end - __init_array_start;
-            std::fprintf(stderr, "[sst-init] (main exe): walking %zu init_array entries\n", n);
+            std::fprintf(stderr, "[sst-init] (main exe): walking %lu init_array entries\n",
+                         static_cast<unsigned long>(n));
             for (void (**fn)(int, char **, char **) = __init_array_start;
                  fn < __init_array_end; ++fn)
             {
