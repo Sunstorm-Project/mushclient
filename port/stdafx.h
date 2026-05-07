@@ -405,6 +405,8 @@ typedef bool (*GetNextLine)   (const CObject * pObject, CFindInfo & FindInfo, CS
 
 // Forward declarations for types referenced below.
 class CMUSHclientApp;
+class CColours;             // defined in OtherTypes.h:883
+                            // — App.m_ColoursMap holds CColours*
 
 // CMUSHclientApp port-side stub. The Windows build has a much larger
 // CWinApp-derived class; for the KEEP+SHIM compile we only need the
@@ -421,7 +423,22 @@ public:
     // Regex engine global flags. Mirrors upstream prefs; defaults
     // chosen to match the Win32 MUSHclient install. Add fields here
     // when KEEP+SHIM tally surfaces new App.* references.
-    BOOL m_bRegexpMatchEmpty = FALSE;
+    BOOL m_bRegexpMatchEmpty       = FALSE;
+    BOOL m_bReconnectOnLinkFailure = FALSE;
+
+    // Name→string map for HTML entity → expansion (e.g. &amp; → "&").
+    // Populated from Color.cpp / on world load. Walked by world_debug
+    // via the CMap POSITION-walk API.
+    CMapBase<CString, CString> m_EntityMap;
+    CMapBase<CString, CString> m_ElementMap;     // MXP element → handler
+
+    // CDocTemplate pointers — Win32 MFC's MDI document-template
+    // registry. The port replaces this with wxAuiNotebook + per-tab
+    // doc/view, but keep the type-name in scope so Utilities.cpp et al
+    // compile. The pointers are never dereferenced in keep-list code.
+    CDocTemplate * m_pNormalDocTemplate = nullptr;
+    CDocTemplate * m_pTextDocTemplate   = nullptr;
+    CDocTemplate * m_pActivityDocTemplate = nullptr;
 
     // High-precision counter freq — Win32 QueryPerformanceFrequency.
     // The port uses clock_gettime(CLOCK_MONOTONIC) which is already
@@ -429,12 +446,13 @@ public:
     // that divide an elapsed-counter by it.
     LARGE_INTEGER m_iCounterFrequency{};
 
-    // Name→COLORREF lookup populated by Color.cpp at startup.
-    // world_debug.cpp walks this via CMap POSITION-based API
-    // (GetStartPosition / GetNextAssoc) and passes a CString out
-    // parameter, so the key type has to be CString — std::string
-    // would force a conversion the upstream code doesn't do.
-    CMapBase<CString, COLORREF> m_ColoursMap;
+    // Name→CColours* lookup populated by Color.cpp at startup.
+    // world_debug.cpp walks this via CMap POSITION-based API and
+    // reads pColour->iColour from each entry, so the VALUE type has
+    // to be CColours* (defined at OtherTypes.h:883). The .cpp files
+    // that actually deref pColour pull in OtherTypes.h via doc.h.
+    // Forward-decl here keeps stdafx.h self-contained.
+    CMapBase<CString, ::CColours *> m_ColoursMap;
 
     // Persistence stub — Windows uses the registry; the port writes
     // these to a SQLite prefs DB. Stub returns 0 so callers compile.
@@ -524,6 +542,18 @@ std::string FindAndReplace(const std::string & s,
 void ChangeToFileBrowsingDirectory();
 void ChangeToStartupDirectory();
 
+// IsArchiveXML — xml_serialize.cpp:101 detects whether a CArchive
+// stream starts with the XML world-file signature. Used in evaluate.cpp
+// / serialize.cpp / xml_load_world.cpp to fork between the binary
+// and XML world-file paths.
+bool IsArchiveXML(CArchive & ar);
+
+// AnsiCode — Color.cpp helper that returns the SGR escape sequence
+// for a given ANSI code (e.g. AnsiCode(ANSI_BOLD) == "\x1b[1m"). Used
+// widely in ProcessPreviousLine.cpp / etc. Forward-decl matches the
+// call-site shape; real impl lives alongside the SGR table.
+CString AnsiCode(int iCode);
+
 // More Utilities.cpp helpers used widely in the keep set. Default
 // args mirror upstream call sites that pass 1 arg (and rely on the
 // header to fill in the rest).
@@ -555,7 +585,8 @@ public:
     int  m_iChatStatus   = 0;
     BOOL m_bCanSnoop     = FALSE;
     BOOL m_bHeIsSnooping = FALSE;
-    void Process_Snoop(LPCTSTR /*data*/, int /*len*/) {}
+    void Process_Snoop(LPCTSTR /*data*/, int /*len*/ = -1) {}
+    template <typename... A> void SendChatMessage(A &&...) {}
 };
 
 // CScriptEngine — VBScript / JScript / Lua dispatcher. The port
@@ -580,6 +611,26 @@ enum eChatStatus {
     eChatConnected,
     eChatDisconnecting,
 };
+
+// CHAT_* protocol constants (chatsock.h:23+). Used by snoop/peer-chat
+// message-routing code in ProcessPreviousLine.cpp etc. Values match
+// the upstream chat-protocol numbering.
+#define CHAT_TEXT_EVERYBODY  4
+#define CHAT_TEXT_PERSONAL   5
+#define CHAT_TEXT_GROUP      6
+#define CHAT_SNOOP          30
+#define CHAT_SNOOP_DATA     31
+
+// SHS_INFO — SHA hashing state struct used in chat file-transfer
+// authentication. Real impl is in shs.h (RFC SHA-1 wrapper); stubs
+// here are enough for ProcessPreviousLine.cpp to compile a local
+// instance — the actual hashing path links the real code.
+struct SHS_INFO {
+    DWORD digest[5];
+    DWORD countLo, countHi;
+    DWORD data[16];
+};
+void MakeRandomNumber(class CMUSHclientDoc * pDoc, SHS_INFO & shsInfo);
 
 // CMUSHclientApp.m_ColoursMap — name→COLORREF lookup (e.g. for ANSI
 // extended-colour names). Real definition is a CMapStringToOb in
@@ -608,6 +659,12 @@ enum eChatStatus {
 // Gallery-flavored ProgDlg.h that MUSHclient uses.
 #define CG_IDD_PROGRESS 30007
 
+// MUSHCLIENT_FONT_FAMILY — value MUSHclient passes as nPitchAndFamily
+// when calling LOGFONT-based CreateFont. Win32 LOGFONT pitch/family
+// flags: FIXED_PITCH (1) | FF_MODERN (48) = 49. The port's CreateFont
+// stub ignores this value, but the named constant has to be in scope.
+#define MUSHCLIENT_FONT_FAMILY  49
+
 // Win32 LOGFONT charset values + Unicode/MultiByte conversion flags
 // used by scriptingoptions / telnet_phases. Values match the Win32
 // SDK; the port doesn't actually do conversion against any specific
@@ -628,6 +685,7 @@ enum eChatStatus {
 struct CFrameStub {
     void SetStatusNormal() {}
     void SetStatus(LPCTSTR /*s*/) {}
+    void SetStatusMessage(LPCTSTR /*s*/) {}
     void SetStatusMessageNow(LPCTSTR /*s*/) {}
 };
 extern CFrameStub Frame;
@@ -701,12 +759,17 @@ public:
     template <typename... A> void CreateOneDim(A &&...) {}
     template <typename... A> void GetElement(A &&...) {}
     template <typename... A> void PutElement(A &&...) {}
-    long GetOneDimSize() const { return 0; }
-    DWORD GetDim() const       { return 1; }
+    long  GetOneDimSize() const { return 0; }
+    DWORD GetDim() const        { return 1; }
     void  Destroy() {}
-    template <typename... A> void Detach(A &&...) {}
+    void  Clear()   {}
+    // MFC's Detach returns the underlying SAFEARRAY pointer wrapped
+    // in a VARIANT. The port doesn't ship SAFEARRAYs (no VBScript),
+    // so the stub returns an empty VARIANT — same behaviour as
+    // operator VARIANT() below.
+    VARIANT Detach() { return VARIANT{}; }
     template <typename... A> void Attach(A &&...) {}
-    operator VARIANT() const   { return VARIANT{}; }
+    operator VARIANT() const    { return VARIANT{}; }
 };
 
 // Win32 OLE VARIANT type tags. The port drops VBScript so these are

@@ -248,6 +248,13 @@ typedef const WCHAR * LPCWSTR;
 int  SaveDC(HDC);
 int  RestoreDC(HDC, int);
 
+// Win32 MulDiv — `(a*b)/c` with overflow protection. Returns -1 on
+// divide-by-zero. Inline shim using LONGLONG so the multiplication
+// can't overflow before the division.
+inline LONG MulDiv(int a, int b, int c) {
+    return c ? static_cast<LONG>(static_cast<long long>(a) * b / c) : -1;
+}
+
 // GetDeviceCaps index constants. LOGPIXELSY = vertical DPI; the rest
 // surface in mushview.cpp / printing.cpp etc. Keeping the named
 // constants in scope so call sites stay readable.
@@ -505,6 +512,12 @@ public:
         auto p = m_str.rfind(ch);
         return p == std::string::npos ? -1 : static_cast<int>(p);
     }
+    // FindOneOf — MFC's "find first char that's in the set". Maps
+    // to std::string::find_first_of.
+    int FindOneOf(const char * cset) const {
+        auto p = m_str.find_first_of(cset);
+        return p == std::string::npos ? -1 : static_cast<int>(p);
+    }
 
     // Replace — MFC returns count of replacements made
     int Replace(char from, char to) {
@@ -759,14 +772,21 @@ private:
 // enough to keep the inheritance chains compiling.
 // ─────────────────────────────────────────────────────────────────────
 
+// CRuntimeClass — MFC's poor-man's RTTI handle. Forward-declared
+// here so CObject::IsKindOf can take a pointer to it.
+class CRuntimeClass;
+
 class CObject {
 public:
     CObject() = default;
     virtual ~CObject() = default;
 
-    // RTTI placeholders — drop runtime-class introspection.
+    // RTTI placeholders — drop runtime-class introspection. IsKindOf
+    // is queried by scriptingoptions / view-walking code; on the port
+    // we always say "yes" since the class hierarchy is collapsed.
     virtual void AssertValid() const {}
     virtual void Dump(class CDumpContext & /*dc*/) const {}
+    virtual BOOL IsKindOf(const CRuntimeClass * /*pClass*/) const { return TRUE; }
 
     // No copy by default in MFC; we leave that to derived classes.
     CObject(const CObject &) = delete;
@@ -813,6 +833,16 @@ public:
 };
 
 class CMemoryException : public CException {};
+// CArchiveException — thrown by CArchive on serialization corruption.
+// Real Win32 has m_cause + a versioning enum; the port doesn't yet
+// emit any of these, so a forward-style CException-derived stub is
+// enough for the keep-set compile.
+class CArchiveException : public CException {
+public:
+    int m_cause{0};
+    enum { none, generic, readOnly, endOfFile, writeOnly, badIndex,
+           badClass, badSchema };
+};
 
 // ─────────────────────────────────────────────────────────────────────
 // Diagnostic macros. ASSERT_VALID is the most-used (130 hits) and is a
@@ -859,6 +889,13 @@ class CMemoryException : public CException {};
 #define IMPLEMENT_DYNAMIC(cls, base)
 #define IMPLEMENT_DYNCREATE(cls, base)
 #define IMPLEMENT_SERIAL(cls, base, ver)
+
+// RUNTIME_CLASS — MFC's runtime-class introspection token. The port
+// drops the runtime-class machinery; CObject::IsKindOf always
+// returns TRUE so the actual pointer doesn't matter. Macro evaluates
+// to a typed nullptr cast so the call-site `IsKindOf(RUNTIME_CLASS(X))`
+// parses cleanly without referencing a non-existent symbol.
+#define RUNTIME_CLASS(class_name) (static_cast<CRuntimeClass *>(nullptr))
 #define DECLARE_MESSAGE_MAP()
 #define BEGIN_MESSAGE_MAP(cls, base)  void cls::__msg_map_unused__()
 #define END_MESSAGE_MAP()
@@ -958,6 +995,10 @@ inline void AfxThrowFileException(int /*cause*/ = -1, long /*lOsError*/ = -1,
 inline void AfxThrowResourceException() { throw CException(); }
 inline void AfxThrowNotSupportedException() { throw CException(); }
 inline void AfxThrowInvalidArgException()   { throw CException(); }
+inline void AfxThrowArchiveException(int /*cause*/ = 0,
+                                     LPCSTR /*archiveName*/ = nullptr) {
+    throw CArchiveException();
+}
 
 // CWinApp / CWnd / CCmdTarget — empty bases so MUSHclient.h's
 // `class CMUSHclientApp : public CWinApp` compiles. The real
@@ -983,6 +1024,7 @@ public:
 // MUSHclient.h declarations type-check. The corresponding .cpp files
 // are on the DELETE list (replaced with wxWidgets) and never reach
 // the cross-compiler in real builds; this only matters for headers.
+class CFont;   // forward; full def further down (CWnd::SetFont uses CFont*)
 class CWnd       : public CCmdTarget {
 public:
     // Win32 GetWindowText: copies the window's title/contents into a
@@ -993,6 +1035,7 @@ public:
         if (nMaxCount > 0) {} return 0;
     }
     void SetWindowText(LPCSTR /*lpszString*/) {}
+    void SetFont(CFont * /*pFont*/, BOOL /*bRedraw*/ = TRUE) {}
 };
 class CFrameWnd  : public CWnd {};
 class CMDIChildWnd : public CFrameWnd {};
@@ -1001,14 +1044,18 @@ class CDialog    : public CWnd { public: virtual int DoModal() { return 0; } };
 class CMenu      : public CObject {};
 class CControlBar : public CWnd {};
 class CDialogBar : public CControlBar {};
+class CView;   // forward; full def below
+
 // CDocument carries m_strPathName / SetModifiedFlag etc. on Win32.
 // Stub them so view code that pokes the document-state surface
 // compiles. Real persistence is rewired separately via the port.
 class CDocument  : public CCmdTarget {
 public:
-    CString m_strPathName;
-    void SetModifiedFlag(BOOL = TRUE) {}
-    void UpdateAllViews(CWnd * = nullptr, LPARAM = 0, CObject * = nullptr) {}
+    CString  m_strPathName;
+    void     SetModifiedFlag(BOOL = TRUE) {}
+    void     UpdateAllViews(CWnd * = nullptr, LPARAM = 0, CObject * = nullptr) {}
+    POSITION GetFirstViewPosition() const { return nullptr; }
+    CView *  GetNextView(POSITION & rPos) const { rPos = nullptr; return nullptr; }
 };
 // CView is per-Win32-MFC a CWnd that knows about its CDocument*.
 // MUSHView's body pokes m_pDocument directly. Expose it as a public
@@ -1053,7 +1100,23 @@ class CGdiObject : public CObject {};
 class CBitmap  : public CGdiObject {};
 class CBrush   : public CGdiObject {};
 class CPen     : public CGdiObject {};
-class CFont    : public CGdiObject {};
+class CFont    : public CGdiObject {
+public:
+    // CreateFont's classic 14-arg Win32 signature. The port doesn't
+    // actually load fonts via this path (wxFont elsewhere); stub returns
+    // TRUE so any caller-side `if (!CreateFont(...))` short-circuits.
+    BOOL CreateFont(int /*nHeight*/, int /*nWidth*/ = 0,
+                    int /*nEscapement*/ = 0, int /*nOrientation*/ = 0,
+                    int /*nWeight*/ = 0, BYTE /*bItalic*/ = 0,
+                    BYTE /*bUnderline*/ = 0, BYTE /*cStrikeOut*/ = 0,
+                    BYTE /*nCharSet*/ = 0, BYTE /*nOutPrecision*/ = 0,
+                    BYTE /*nClipPrecision*/ = 0, BYTE /*nQuality*/ = 0,
+                    BYTE /*nPitchAndFamily*/ = 0,
+                    LPCSTR /*lpszFacename*/ = nullptr) { return TRUE; }
+    BOOL CreatePointFont(int, LPCSTR, CDC * = nullptr) { return TRUE; }
+    BOOL CreateFontIndirect(const void * /*lf*/) { return TRUE; }
+    BOOL DeleteObject() { return TRUE; }
+};
 class CPalette : public CGdiObject {};
 class CRgn     : public CGdiObject {};
 class CPaintDC : public CDC {};
@@ -1071,7 +1134,14 @@ class CListBox   : public CWnd {};
 class CComboBox  : public CWnd {};
 class CStatic    : public CWnd {};
 class CTabCtrl   : public CWnd {};
-class CToolTipCtrl : public CWnd {};
+class CToolTipCtrl : public CWnd {
+public:
+    HWND m_hWnd = nullptr;       // CWnd has it on Win32; expose here too
+    BOOL Create(CWnd *, DWORD = 0) { return TRUE; }
+    BOOL AddTool(CWnd *, LPCSTR, const void * = nullptr, UINT = 0) { return TRUE; }
+    void Activate(BOOL = TRUE) {}
+    void RelayEvent(void * /*pMsg*/) {}
+};
 class CTreeCtrl  : public CWnd {};
 class CHeaderCtrl: public CWnd {};
 class CScrollBar : public CWnd {};
@@ -1366,13 +1436,15 @@ public:
 
 // COleVariant — Win32 OLE wrapper around VARIANT. The port drops
 // scripted-property-bag flow (no VBScript), but doc files and
-// timers.cpp pass COleVariant arrays around. A complete-but-inert
-// stub is enough to compile.
-class COleVariant {
+// timers.cpp pass COleVariant arrays around. We inherit publicly
+// from VARIANT so a `COleVariant args[N]` array decays to a
+// `VARIANT*` (which DISPPARAMS demands) without an explicit cast.
+class COleVariant : public VARIANT {
 public:
-    template <typename... A> COleVariant(A &&...) {}
-    operator VARIANT() const { return VARIANT{}; }
-    void Clear() {}
+    COleVariant() : VARIANT{} {}
+    template <typename T> COleVariant(const T & /*val*/) : VARIANT{} {}
+    template <typename T> COleVariant & operator=(const T & /*val*/) { return *this; }
+    void Clear() { vt = 0; }
     template <typename... A> void Attach(A &&...) {}
 };
 
@@ -1430,7 +1502,11 @@ public:
     }
 };
 
-using CMapStringToString = CMapBase<std::string, std::string>;
+// CMapStringToString uses CString keys + values to match the upstream
+// code's habit of passing CString out-params to GetNextAssoc. Backing
+// storage stays std::map<CString, CString>; CString already has the
+// operator< / operator== that std::map needs.
+using CMapStringToString = CMapBase<CString, CString>;
 using CMapStringToPtr    = CMapBase<std::string, void *>;
 
 template <typename T>
