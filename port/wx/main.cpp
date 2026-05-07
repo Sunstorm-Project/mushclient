@@ -220,72 +220,204 @@ private:
 };
 
 // ─────────────────────────────────────────────────────────────────────
-// ─────────────────────────────────────────────────────────────────────
-// OutputPane — wxTextCtrl-backed read-only view of MUD output.
+// OutputPane — custom-painted scrolled view of styled MUD output.
 //
-// Empirical finding 2026-05-07: wxX11 / wxUniversal's wxPaintDC::
-// DrawText silently produces zero pixels for our custom-drawn pane
-// regardless of fg/bg/font/SetBackgroundMode/SetForegroundColour/
-// font-face/explicit-Courier/wxNORMAL_FONT/warm-up-DrawRectangle.
-// DrawRectangle on the same DC works fine. The wx widgets that
-// render text correctly (menubar / statusbar / dialogs / wxTextCtrl
-// itself) all go through the wxRenderer-based widget text path,
-// not the DC text path.
+// wxMotif's wxTextCtrl backs onto an XmText widget that only supports
+// a single foreground/background pair per widget — per-character ANSI
+// colour can't be done that way. Gammon's Win32 MUSHclient uses a CView
+// (CMUSHView) that paints the styled output line-by-line via CDC; we
+// do the same here on a wxScrolledWindow + wxPaintDC, which:
+//   • gives us a true black background (XmText ignores SetBg on Sol 7)
+//   • renders each AnsiSpan in its own foreground colour
+//   • supports the CDE-style fixed-pitch font as a single uniform face
+//   • is the natural drop-in target for the eventual mushview.cpp port.
 //
-// So we back the OutputPane with a real wxTextCtrl. We lose per-
-// span colour rendering — wxTextCtrl can't multi-attribute text
-// without wxRichTextCtrl which the original handoff already
-// flagged as "renders poorly on wxX11". For a first usable MUD
-// client, plain monochrome MUD output is far better than the
-// invisible-everything we'd get from the DC path.
-//
-// AnsiSpan / SetPendingLine API stays so the parser → output
-// flow doesn't have to change. Per-span colour is flattened to
-// concatenated text.
+// wxBORDER_SUNKEN trips X_ConfigureWindow BadValue on wxMotif Sol 7;
+// use wxNO_BORDER. SetBackgroundStyle(wxBG_STYLE_PAINT) at construction
+// also raises BadValue — skip it; the OnPaint fill handles bg.
 // ─────────────────────────────────────────────────────────────────────
 
-class OutputPane : public wxTextCtrl {
+class OutputPane : public wxScrolledWindow {
 public:
     OutputPane(wxWindow * parent)
-        : wxTextCtrl(parent, wxID_ANY, wxEmptyString,
-                     wxDefaultPosition, wxDefaultSize,
-                     wxTE_READONLY | wxTE_MULTILINE |
-                     wxTE_DONTWRAP | wxBORDER_SUNKEN | wxTE_RICH2)
+        : wxScrolledWindow(parent, wxID_ANY,
+                           wxPoint(0, 0), wxSize(100, 100),
+                           wxBORDER_SUNKEN)   // per the flicker-free
+                                              // recipe — wxNO_BORDER
+                                              // works visually but
+                                              // SUNKEN gives Motif
+                                              // a stable widget tree.
     {
-        // MUSHclient defaults: light grey on black, fixed-pitch
-        // dtterm-style font. wxMotif's wxTextCtrl may not honour
-        // SetBackgroundColour on Solaris 7 — we still set it for
-        // any backend that does. The font request goes through Xt
-        // and resolves to a CDE Courier face on this stack.
+        // wxMotif on Solaris 7 raises X_ConfigureWindow BadValue if we
+        // call SetBackgroundStyle(wxBG_STYLE_PAINT) at construction —
+        // skip it. Black bg comes from wx's default erase using the
+        // colour we set here.
         SetBackgroundColour(*wxBLACK);
+        // MUSHclient default WHITE-normal from Utilities.cpp:1655 —
+        // light grey on black.
         SetForegroundColour(wxColour(192, 192, 192));
 
-        wxFont term(12, wxFONTFAMILY_TELETYPE,
-                    wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL,
-                    false, wxEmptyString);
-        SetFont(term);
+        // CDE dtterm-flavour terminal font. wxFONTFAMILY_TELETYPE asks
+        // X11 for a fixed-pitch face; on Solaris 7 CDE that typically
+        // resolves to one of:
+        //   -bitstream-courier-medium-r-normal--14-100-100-100-m-90-iso8859-1
+        //   -misc-fixed-medium-r-normal--14-130-75-75-c-70-iso8859-1
+        m_font = wxFont(12, wxFONTFAMILY_TELETYPE,
+                        wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL,
+                        false, wxEmptyString);
+        m_fontBold = m_font; m_fontBold.SetWeight(wxFONTWEIGHT_BOLD);
 
-        wxTextAttr defAttr(wxColour(192, 192, 192), *wxBLACK, term);
-        SetDefaultStyle(defAttr);
+        // Cell metrics — defer measurement until the widget is shown
+        // (wxClientDC before realize on wxMotif raises BadValue from
+        // X_ConfigureWindow). Use safe defaults until first paint.
+        m_cellH = 14;
+        m_cellW = 8;
+
+        Bind(wxEVT_PAINT, &OutputPane::OnPaint, this);
+        Bind(wxEVT_SIZE,  &OutputPane::OnSize,  this);
+        Bind(wxEVT_SHOW,  &OutputPane::OnFirstShow, this);
+        // Flicker-free black bg recipe (per the 2026-05-07 evening
+        // handoff). wxMotif's automatic erase paints wxSYS_COLOUR_3DFACE
+        // (Motif grey) regardless of SetBackgroundColour. Intercept
+        // EVT_ERASE_BACKGROUND and paint BLACK on the DC the event hands
+        // us — the same DC drives the Expose region the subsequent
+        // EVT_PAINT will draw text on, so the user sees one composite,
+        // no grey-flash before text. Crucially: a no-op handler does NOT
+        // work (leaves the inherited grey); we MUST do the black fill
+        // here, not in OnPaint.
+        Bind(wxEVT_ERASE_BACKGROUND, [](wxEraseEvent & ev) {
+            wxDC * dc = ev.GetDC();
+            if (!dc) return;
+            dc->SetBackground(wxBrush(*wxBLACK));
+            dc->Clear();
+        });
     }
 
+    // API matching the old wxTextCtrl-based pane so callers don't change.
     void AppendLine(const wxString & s) {
-        AppendText(s);
-        AppendText(wxT("\n"));
-        SetInsertionPointEnd();   // auto-scroll
+        AnsiSpan span;
+        span.text = s;
+        span.fg   = wxColour(192, 192, 192);   // ANSI light grey
+        span.bold = false;
+        m_lines.push_back({span});
+        OnContentChanged();
     }
 
     void AppendStyledLine(std::vector<AnsiSpan> && spans) {
-        wxString line;
-        for (const AnsiSpan & span : spans) line += span.text;
-        AppendLine(line);
+        m_lines.push_back(std::move(spans));
+        OnContentChanged();
     }
 
-    // wxTextCtrl can't render an "in-progress" line that gets
-    // replaced as bytes arrive. For now ignore the pending state;
-    // partial server output (no trailing \n) waits for the next \n
-    // to commit.
-    void SetPendingLine(std::vector<AnsiSpan> /*spans*/) {}
+    // A line that's still being received (no terminating \n yet).
+    // Drawn at the bottom but not committed to m_lines.
+    //
+    // CRITICAL: only Refresh if the pending content actually changed.
+    // The poll-timer calls this every 50ms regardless of whether data
+    // arrived; an unconditional Refresh here forced a 20 Hz full
+    // repaint = the visible "constant flicker" the user reported. With
+    // the early-out, idle ticks are zero-cost and only real content
+    // updates trigger a paint.
+    void SetPendingLine(std::vector<AnsiSpan> spans) {
+        if (PendingEqual(m_pending, spans)) return;
+        m_pending = std::move(spans);
+        Refresh(false);
+    }
+
+private:
+    static bool PendingEqual(const std::vector<AnsiSpan> & a,
+                             const std::vector<AnsiSpan> & b) {
+        if (a.size() != b.size()) return false;
+        for (std::size_t i = 0; i < a.size(); ++i) {
+            if (a[i].text != b[i].text) return false;
+            if (a[i].bold != b[i].bold) return false;
+            if (a[i].fg   != b[i].fg)   return false;
+        }
+        return true;
+    }
+public:
+
+private:
+    void OnFirstShow(wxShowEvent & ev) {
+        ev.Skip();
+        if (m_metricsDone) return;
+        m_metricsDone = true;
+        wxClientDC dc(this);
+        dc.SetFont(m_font);
+        const int h = dc.GetCharHeight();
+        const int w = dc.GetCharWidth();
+        if (h >= 8) m_cellH = h;
+        if (w >= 4) m_cellW = w;
+        SetScrollRate(m_cellW, m_cellH);
+        SetVirtualSize(2000, std::max<int>(1, m_lines.size() + 1) * m_cellH);
+    }
+
+    void OnContentChanged() {
+        // Trim the scrollback to a reasonable maximum so this doesn't
+        // grow without bound. 5000 lines is plenty for a MUD session.
+        constexpr std::size_t kMaxLines = 5000;
+        if (m_lines.size() > kMaxLines) {
+            m_lines.erase(m_lines.begin(),
+                          m_lines.begin() + (m_lines.size() - kMaxLines));
+        }
+        const int total = static_cast<int>(m_lines.size());
+        SetVirtualSize(2000, (total + 1) * m_cellH);
+        // Auto-scroll to bottom.
+        int xUnit, yUnit;
+        GetScrollPixelsPerUnit(&xUnit, &yUnit);
+        if (yUnit > 0) {
+            const int visibleRows = GetClientSize().GetHeight() / m_cellH;
+            const int targetUnit  = std::max(0, total - visibleRows + 1);
+            Scroll(0, targetUnit);
+        }
+        Refresh(false);
+    }
+
+    void OnSize(wxSizeEvent & ev) { ev.Skip(); Refresh(false); }
+
+    void OnPaint(wxPaintEvent &) {
+        // No bg fill in OnPaint — our EVT_ERASE_BACKGROUND handler
+        // (in the ctor) has already painted black on the same DC's
+        // expose region. We just stamp text on top. Adding a fill
+        // here would be a SECOND op per paint, which is the visible
+        // flicker we used to see.
+        wxPaintDC dc(this);
+        DoPrepareDC(dc);
+
+        const wxRect view = GetUpdateRegion().GetBox();
+        int virtX, virtY;
+        CalcUnscrolledPosition(view.x, view.y, &virtX, &virtY);
+        const int firstLine = std::max(0, virtY / m_cellH);
+        const int lastLine  = std::min(static_cast<int>(m_lines.size()),
+                                       (virtY + view.height) / m_cellH + 1);
+
+        for (int i = firstLine; i < lastLine; ++i) {
+            DrawLine(dc, i * m_cellH, m_lines[static_cast<std::size_t>(i)]);
+        }
+        if (!m_pending.empty()) {
+            DrawLine(dc, static_cast<int>(m_lines.size()) * m_cellH, m_pending);
+        }
+    }
+
+    void DrawLine(wxDC & dc, int y, const std::vector<AnsiSpan> & spans) {
+        int x = 0;
+        dc.SetBackgroundMode(wxBRUSHSTYLE_TRANSPARENT);
+        for (const AnsiSpan & span : spans) {
+            dc.SetFont(span.bold ? m_fontBold : m_font);
+            dc.SetTextForeground(span.fg);
+            dc.DrawText(span.text, x, y);
+            int w, h;
+            dc.GetTextExtent(span.text, &w, &h);
+            x += w;
+        }
+    }
+
+    std::vector<std::vector<AnsiSpan> > m_lines;
+    std::vector<AnsiSpan>               m_pending;
+    wxFont   m_font;
+    wxFont   m_fontBold;
+    int      m_cellW{8};
+    int      m_cellH{14};
+    bool     m_metricsDone{false};
 };
 
 
@@ -516,7 +648,12 @@ private:
     }
 
     void OnInputEnter(wxCommandEvent & ev) {
-        const wxString line = ev.GetString();
+        // wxMotif's wxTextCtrl populates ev.GetString() inconsistently
+        // — it can come back empty even when the box has text, so we
+        // were sending blank "\r\n" lines to the server. Read the
+        // widget's value directly; fall back to the event string only
+        // if m_input is somehow null.
+        const wxString line = m_input ? m_input->GetValue() : ev.GetString();
         if (m_socket && m_socket->IsConnected()) {
             wxString out = line + wxT("\r\n");
             const wxScopedCharBuffer utf8 = out.utf8_str();
@@ -530,6 +667,7 @@ private:
             m_output->AppendLine(wxString::Format(wxT("(offline) > %s"), line));
         }
         m_input->Clear();
+        m_input->SetFocus();
     }
 
     OutputPane *         m_output{nullptr};
