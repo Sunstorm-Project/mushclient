@@ -95,6 +95,14 @@ using SOCKET      = int;
 using std::min;
 using std::max;
 
+// MFC's POSITION is an opaque iterator handle. The shim uses void* as
+// the carrier type — collection classes below cast to/from their own
+// internal iterator types. Defined here (early in mfc_shim.h) so the
+// CMap / CList / CTypedPtrList classes below can all use the same
+// typedef. stdafx.h re-typedefs it after including this header; that's
+// a redundant-but-identical typedef which C++ permits.
+typedef void * POSITION;
+
 // MUSHclient's headers use unqualified `string`/`vector`/`map` etc.
 // (the Windows build presumably had `using namespace std;` via the
 // MFC umbrella). Pull the most-used std types into ::scope so the
@@ -168,6 +176,128 @@ struct VARIANT { unsigned short vt; unsigned short wReserved1, wReserved2, wRese
 struct VARIANTARG : VARIANT {};
 
 using COLORREF = DWORD;
+using UINT_PTR = std::size_t;
+using LPVOID   = void *;
+using HDC      = void *;     // Win32 device-context handle
+using HGDIOBJ  = void *;
+using LPCSTR   = const char *;
+struct CHARFORMAT { DWORD cbSize; DWORD dwMask; DWORD dwEffects; LONG yHeight; LONG yOffset; COLORREF crTextColor; BYTE bCharSet; BYTE bPitchAndFamily; char szFaceName[32]; };
+
+// Win32 notification / window-message structs. KEEP+SHIM headers
+// reference these as struct types in member-function signatures
+// (e.g. `afx_msg void OnNotify(NMHDR* pNMHDR, LRESULT* pResult)` in
+// dialog/control headers). The fields are filled in by Win32 only;
+// nothing on the port writes them. Just enough so the header parses.
+struct NMHDR {
+    HWND     hwndFrom;
+    UINT_PTR idFrom;
+    UINT     code;
+};
+
+struct CREATESTRUCT {
+    LPVOID       lpCreateParams;
+    HINSTANCE    hInstance;
+    HMENU        hMenu;
+    HWND         hwndParent;
+    int          cy, cx;
+    int          y, x;
+    LONG         style;
+    const char * lpszName;   // LPCTSTR isn't typedef'd yet here; same type
+    const char * lpszClass;
+    DWORD        dwExStyle;
+};
+typedef CREATESTRUCT * LPCREATESTRUCT;
+class CCreateContext;       // forward; CMDIChildWnd::OnCreateClient uses it
+
+// DRAWITEMSTRUCT — Win32 owner-draw notification (WM_DRAWITEM).
+// Member-fn signatures in the upstream view headers reference
+// LPDRAWITEMSTRUCT; the body never runs on the port. Just enough so
+// the header parses.
+struct DRAWITEMSTRUCT {
+    UINT  CtlType;
+    UINT  CtlID;
+    UINT  itemID;
+    UINT  itemAction;
+    UINT  itemState;
+    HWND  hwndItem;
+    HDC   hDC;
+    LONG  rcItem_left, rcItem_top, rcItem_right, rcItem_bottom;
+    UINT_PTR itemData;
+};
+typedef DRAWITEMSTRUCT * LPDRAWITEMSTRUCT;
+
+// MEASUREITEMSTRUCT — sibling of DRAWITEMSTRUCT (WM_MEASUREITEM).
+struct MEASUREITEMSTRUCT {
+    UINT     CtlType, CtlID, itemID;
+    UINT     itemWidth, itemHeight;
+    UINT_PTR itemData;
+};
+typedef MEASUREITEMSTRUCT * LPMEASUREITEMSTRUCT;
+
+// WCHAR — Win32 wide-char (UTF-16 on Windows). On Solaris 7 we map
+// it to wchar_t which is 32-bit, but no shim code actually does
+// wide-char processing, so the size mismatch is academic.
+typedef wchar_t WCHAR;
+typedef WCHAR * LPWSTR;
+typedef const WCHAR * LPCWSTR;
+
+// Win32 GDI device-context API. SaveDC / RestoreDC bracket nested
+// drawing scopes; everything is a no-op on the port. Defined later
+// in this file once BOOL/TRUE are in scope. Forward-declared here
+// so MUSHview.h's signature parses (it just takes the type-name).
+int  SaveDC(HDC);
+int  RestoreDC(HDC, int);
+
+// GetDeviceCaps index constants. LOGPIXELSY = vertical DPI; the rest
+// surface in mushview.cpp / printing.cpp etc. Keeping the named
+// constants in scope so call sites stay readable.
+#define HORZRES         8
+#define VERTRES         10
+#define LOGPIXELSX      88
+#define LOGPIXELSY      90
+
+// CDataExchange — MFC dialog DDX/DDV plumbing. Dialog headers declare
+// `void DoDataExchange(CDataExchange* pDX);`; bodies are wholesale
+// stubbed out for the wxDialog-replaced path. Forward-decl is enough
+// to make the header signature parse.
+class CDataExchange;
+
+// CPrintInfo — MFC print/print-preview helper. Referenced in the
+// view headers (CView::OnPreparePrinting etc.); we never print on
+// the port, so a forward-decl satisfies the parser.
+class CPrintInfo;
+
+// WINDOWPLACEMENT — Win32 SetWindowPlacement / GetWindowPlacement.
+// Used in mainfrm.h to remember the pre-fullscreen frame geometry.
+// Members match Win32 layout so size of the struct is plausible if
+// any code sizeof()s it; the values are inert on the port.
+struct WINDOWPLACEMENT {
+    UINT length;
+    UINT flags;
+    UINT showCmd;
+    struct { LONG x, y; }                     ptMinPosition;
+    struct { LONG x, y; }                     ptMaxPosition;
+    struct { LONG left, top, right, bottom; } rcNormalPosition;
+};
+
+// NOTIFYICONDATA — Win32 system-tray icon descriptor. Stored as a
+// member in mainfrm.h; never used on the port (no system tray).
+struct NOTIFYICONDATA {
+    DWORD cbSize;
+    HWND  hWnd;
+    UINT  uID;
+    UINT  uFlags;
+    UINT  uCallbackMessage;
+    HICON hIcon;
+    char  szTip[128];
+};
+
+// MFC AfxThrow* / port-side ThrowErrorException — printf-style
+// formatter that throws a CException. Defined in exceptions.cpp on
+// the port (already in the KEEP+SHIM set). Forward-decl with C-style
+// variadic so call sites in regexp.cpp / art.cpp / etc. compile.
+void ThrowErrorException(LPCSTR fmt, ...);
+void ThrowErrorException(UINT nFormatID, ...);
 
 #ifndef TRUE
 #define TRUE 1
@@ -660,6 +790,14 @@ public:
         return TRUE;
     }
     void Delete() { delete this; }
+    // ReportError — Win32 MFC pops a message box describing the error.
+    // On the port we route through AfxMessageBox / TMessageBox; for
+    // the keep-set compile path the body just needs to compile.
+    int  ReportError(UINT /*nType*/ = 0, UINT /*nMessageID*/ = 0) {
+        char buf[512];
+        GetErrorMessage(buf, sizeof buf);
+        return 0;
+    }
     const char * what() const noexcept override { return "CException"; }
 };
 
@@ -707,9 +845,17 @@ class CMemoryException : public CException {};
 #define afx_msg
 
 // Unused-on-Solaris macros that show up in MFC sources we keep.
-#define DECLARE_DYNAMIC(cls)
-#define DECLARE_DYNCREATE(cls)
-#define DECLARE_SERIAL(cls)
+// Real MFC's DECLARE_DYNAMIC / DECLARE_DYNCREATE / DECLARE_SERIAL all
+// start with `public:` (they declare static runtime-class state that
+// must be public). Class bodies in MUSHclient sources rely on this:
+// they put the macro at the very top of `class Foo : public CObject`
+// — where the default access is `private` — and then list ctor/dtor
+// without an explicit `public:`. Real MFC's macro flips access to
+// public; ours has to do the same or those ctors/dtors are
+// inaccessible (e.g. `delete pAlias` in evaluate.cpp).
+#define DECLARE_DYNAMIC(cls)    public:
+#define DECLARE_DYNCREATE(cls)  public:
+#define DECLARE_SERIAL(cls)     public:
 #define IMPLEMENT_DYNAMIC(cls, base)
 #define IMPLEMENT_DYNCREATE(cls, base)
 #define IMPLEMENT_SERIAL(cls, base, ver)
@@ -753,6 +899,35 @@ class CMemoryException : public CException {};
 
 // ─────────────────────────────────────────────────────────────────────
 // Afx* convenience entry points. The caller-visible behaviour here is
+// Win32 MessageBox flags. Used as the `type` arg to AfxMessageBox /
+// UMessageBox. Values match the Win32 API so call sites remain
+// readable; the actual icon/button isn't drawn on the port (every
+// path eventually routes through AfxMessageBox-which-is-a-stub).
+#define MB_OK                   0x00000000
+#define MB_OKCANCEL             0x00000001
+#define MB_YESNO                0x00000004
+#define MB_YESNOCANCEL          0x00000003
+#define MB_ICONHAND             0x00000010
+#define MB_ICONERROR            MB_ICONHAND
+#define MB_ICONSTOP             MB_ICONHAND
+#define MB_ICONQUESTION         0x00000020
+#define MB_ICONEXCLAMATION      0x00000030
+#define MB_ICONWARNING          MB_ICONEXCLAMATION
+#define MB_ICONASTERISK         0x00000040
+#define MB_ICONINFORMATION      MB_ICONASTERISK
+#define IDOK                    1
+#define IDCANCEL                2
+#define IDYES                   6
+#define IDNO                    7
+
+// Win32 OPENFILENAME flags. Used by CFileDialog stubs in dialog
+// headers; only OFN_HIDEREADONLY is referenced from the KEEP+SHIM
+// set so far, but the others come up close behind.
+#define OFN_HIDEREADONLY        0x00000004
+#define OFN_OVERWRITEPROMPT     0x00000002
+#define OFN_FILEMUSTEXIST       0x00001000
+#define OFN_PATHMUSTEXIST       0x00000800
+
 // minimal — a real wxWidgets shell will route AfxMessageBox →
 // wxMessageBox at the application layer.
 // ─────────────────────────────────────────────────────────────────────
@@ -808,16 +983,50 @@ public:
 // MUSHclient.h declarations type-check. The corresponding .cpp files
 // are on the DELETE list (replaced with wxWidgets) and never reach
 // the cross-compiler in real builds; this only matters for headers.
-class CWnd       : public CCmdTarget {};
+class CWnd       : public CCmdTarget {
+public:
+    // Win32 GetWindowText: copies the window's title/contents into a
+    // CString. Stub returns empty so call sites that read & ignore
+    // compile cleanly.
+    void GetWindowText(CString & rString) const { rString = CString(); }
+    int  GetWindowText(char * /*lpsz*/, int nMaxCount) const {
+        if (nMaxCount > 0) {} return 0;
+    }
+    void SetWindowText(LPCSTR /*lpszString*/) {}
+};
 class CFrameWnd  : public CWnd {};
 class CMDIChildWnd : public CFrameWnd {};
 class CMDIFrameWnd : public CFrameWnd {};
-class CDialog    : public CWnd {};
-class CDocument  : public CCmdTarget {};
-class CView      : public CWnd {};
+class CDialog    : public CWnd { public: virtual int DoModal() { return 0; } };
+class CMenu      : public CObject {};
+class CControlBar : public CWnd {};
+class CDialogBar : public CControlBar {};
+// CDocument carries m_strPathName / SetModifiedFlag etc. on Win32.
+// Stub them so view code that pokes the document-state surface
+// compiles. Real persistence is rewired separately via the port.
+class CDocument  : public CCmdTarget {
+public:
+    CString m_strPathName;
+    void SetModifiedFlag(BOOL = TRUE) {}
+    void UpdateAllViews(CWnd * = nullptr, LPARAM = 0, CObject * = nullptr) {}
+};
+// CView is per-Win32-MFC a CWnd that knows about its CDocument*.
+// MUSHView's body pokes m_pDocument directly. Expose it as a public
+// pointer on the shim — value is always nullptr; callers check.
+class CView      : public CWnd {
+public:
+    CDocument * m_pDocument = nullptr;
+    CDocument * GetDocument() const { return m_pDocument; }
+};
 class CScrollView: public CView {};
 class CFormView  : public CView {};
-class CCmdUI     : public CObject {};
+class CCmdUI     : public CObject {
+public:
+    void Enable(BOOL = TRUE) {}
+    void SetCheck(int = 1) {}
+    void SetRadio(BOOL = TRUE) {}
+    void SetText(LPCSTR /*lpszText*/) {}
+};
 class CRuntimeClass {};
 class CDocTemplate : public CCmdTarget {};
 class CMultiDocTemplate : public CDocTemplate {
@@ -828,7 +1037,18 @@ class CSingleDocTemplate : public CDocTemplate {};
 
 // Drawing primitives — empty bases for type-checking. Real GUI code
 // is rewritten to wxDC etc., not these.
-class CDC      : public CObject {};
+class CDC      : public CObject {
+public:
+    // Win32 GDI minimum surface — used in dozens of places for offscreen
+    // bitmap rendering. Stubs are inert; the compile-only KEEP+SHIM
+    // path doesn't actually paint.
+    BOOL  CreateCompatibleDC(CDC * /*pDC*/) { return TRUE; }
+    BOOL  DeleteDC()                        { return TRUE; }
+    HGDIOBJ SelectObject(HGDIOBJ /*obj*/)   { return nullptr; }
+    int   SaveDC()                          { return 0; }
+    BOOL  RestoreDC(int)                    { return TRUE; }
+    int   GetDeviceCaps(int /*nIndex*/) const { return 96; }
+};
 class CGdiObject : public CObject {};
 class CBitmap  : public CGdiObject {};
 class CBrush   : public CGdiObject {};
@@ -850,6 +1070,69 @@ class CEdit      : public CWnd {};
 class CListBox   : public CWnd {};
 class CComboBox  : public CWnd {};
 class CStatic    : public CWnd {};
+class CTabCtrl   : public CWnd {};
+class CToolTipCtrl : public CWnd {};
+class CTreeCtrl  : public CWnd {};
+class CHeaderCtrl: public CWnd {};
+class CScrollBar : public CWnd {};
+class CCheckListBox : public CListBox {};
+class CSliderCtrl : public CWnd {};
+class CSpinButtonCtrl : public CWnd {};
+class CProgressCtrl : public CWnd {};
+class CHotKeyCtrl : public CWnd {};
+class CDateTimeCtrl : public CWnd {};
+class CMonthCalCtrl : public CWnd {};
+class CIPAddressCtrl : public CWnd {};
+class CRichEditCtrl : public CWnd {};
+
+// View specializations — needed for upstream CSendView/CTextView : public
+// CEditView, etc.
+class CEditView  : public CView {};
+class CRichEditView : public CView {};
+class CTreeView  : public CView {};
+class CListView  : public CView {};
+
+// Common dialogs. CFileDialog's MFC ctor takes ~6 args; using a
+// permissive variadic template lets all the call sites compile
+// without bringing in the full Win32 OPENFILENAME machinery.
+class CFontDialog : public CDialog {};
+class CColorDialog : public CDialog {};
+
+// OPENFILENAME — Win32 common-dialog state struct. CFileDialog
+// exposes it via the m_ofn member; MUSHclient call sites poke
+// individual fields (mostly lpstrTitle / lpstrFilter / Flags). Only
+// the fields actually referenced are listed.
+struct OPENFILENAME {
+    DWORD       lStructSize;
+    HWND        hwndOwner;
+    HINSTANCE   hInstance;
+    const char *lpstrFilter;
+    const char *lpstrCustomFilter;
+    DWORD       nMaxCustFilter;
+    DWORD       nFilterIndex;
+    char *      lpstrFile;
+    DWORD       nMaxFile;
+    char *      lpstrFileTitle;
+    DWORD       nMaxFileTitle;
+    const char *lpstrInitialDir;
+    const char *lpstrTitle;
+    DWORD       Flags;
+    WORD        nFileOffset, nFileExtension;
+    const char *lpstrDefExt;
+    LPARAM      lCustData;
+};
+
+class CFileDialog : public CDialog {
+public:
+    template <typename... Args> CFileDialog(Args &&...) {}
+    int    DoModal()              { return IDCANCEL; }
+    CString GetPathName() const   { return CString(); }
+    CString GetFileName() const   { return CString(); }
+    OPENFILENAME m_ofn{};
+};
+class CPropertyPage : public CDialog {};
+class CPropertySheet : public CWnd {};
+
 class CSocket : public CObject {};
 class CAsyncSocket : public CObject {};
 class CCriticalSection {
@@ -893,9 +1176,15 @@ struct RECT  { LONG left; LONG top; LONG right; LONG bottom; };
 struct SIZE  { LONG cx; LONG cy; };
 
 // LARGE_INTEGER — used for high-resolution timers in a couple of files.
+// Adds an explicit operator-bool because MUSHclient code does
+// `if (App.m_iCounterFrequency)` to gate QueryPerformanceCounter calls;
+// MSVC's LARGE_INTEGER bool-converts implicitly via the union nested
+// types, but gcc rejects this — the operator below makes the check
+// portable and inexpensive (single 64-bit compare).
 union LARGE_INTEGER {
     struct { DWORD LowPart; LONG HighPart; };
     LONGLONG QuadPart;
+    explicit operator bool() const { return QuadPart != 0; }
 };
 
 // SYSTEMTIME — Win32 broken-down time struct. Same idea as struct
@@ -985,6 +1274,13 @@ public:
     enum SeekPosition { begin = 0, current = 1, end = 2 };
 
     CFile() = default;
+    // MFC-style "open in ctor; throw on failure" overload, mirroring
+    // CStdioFile. Used in evaluate.cpp's plugin-source loader.
+    CFile(LPCTSTR lpszFileName, UINT nOpenFlags) {
+        if (!Open(lpszFileName, nOpenFlags)) {
+            throw new CFileException();
+        }
+    }
     virtual ~CFile() { if (m_fp) std::fclose(m_fp); }
 
     virtual BOOL Open(const char * path, UINT flags, CFileException * /*err*/ = nullptr) {
@@ -1029,6 +1325,14 @@ protected:
 class CStdioFile : public CFile {
 public:
     CStdioFile() = default;
+    // MFC-style "open in ctor; throw on failure" overload. Used by
+    // NameGeneration.cpp and a few other places that wrap the open in
+    // a try/catch block with `catch (CException * e)`.
+    CStdioFile(LPCTSTR lpszFileName, UINT nOpenFlags) {
+        if (!Open(lpszFileName, nOpenFlags)) {
+            throw new CFileException(); // caller deletes via e->Delete()
+        }
+    }
     BOOL ReadString(CString & line) {
         if (!m_fp) return FALSE;
         char buf[4096];
@@ -1043,10 +1347,33 @@ public:
     }
 };
 
-// CArchive — placeholder. Using it forces a TODO during port.
+// CArchive — placeholder. Real Win32 CArchive is the binary
+// serialization framework MUSHclient used for world files. The port
+// rewrites those code paths to JSON / flat I/O (see PORT_STATUS.md);
+// here we keep just enough surface for evaluate.cpp / doc.cpp to
+// compile while their bodies await the rewrite. `load` returns 0
+// to signal "no bytes read" so call sites bail gracefully.
 class CArchive {
 public:
-    CArchive() = delete;        // refuse instantiation; rewrite call sites to JSON or binary I/O
+    enum Mode { load = 0, store = 1, bNoFlushOnDelete = 2 };
+    CArchive() = default;
+    template <typename... A> CArchive(A &&...) {}
+    int  Read(void * /*buf*/, UINT /*n*/) { return 0; }
+    void Write(const void * /*buf*/, UINT /*n*/) {}
+    BOOL IsLoading() const { return TRUE; }
+    BOOL IsStoring() const { return FALSE; }
+};
+
+// COleVariant — Win32 OLE wrapper around VARIANT. The port drops
+// scripted-property-bag flow (no VBScript), but doc files and
+// timers.cpp pass COleVariant arrays around. A complete-but-inert
+// stub is enough to compile.
+class COleVariant {
+public:
+    template <typename... A> COleVariant(A &&...) {}
+    operator VARIANT() const { return VARIANT{}; }
+    void Clear() {}
+    template <typename... A> void Attach(A &&...) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1132,6 +1459,25 @@ public:
     }
     VALUE & operator[](const KEY & k) { return m_map[k]; }
     void InitHashTable(unsigned int /*hashSize*/, BOOL = TRUE) {}
+
+    // POSITION-walk subset, with KEY-typed reference so callers don't
+    // hit a `cannot convert CString to std::string &` mismatch when
+    // the BASE_CLASS would otherwise inherit a std::string-keyed
+    // GetNextAssoc from CMapBase.
+    POSITION GetStartPosition() const {
+        if (m_map.empty()) return nullptr;
+        return new typename map_t::const_iterator(m_map.begin());
+    }
+    void GetNextAssoc(POSITION & rPos, KEY & rKey, VALUE & rValue) const {
+        auto * itp = static_cast<typename map_t::const_iterator *>(rPos);
+        rKey   = (*itp)->first;
+        rValue = (*itp)->second;
+        ++(*itp);
+        if (*itp == m_map.end()) {
+            delete itp;
+            rPos = nullptr;
+        }
+    }
 };
 
 // CPtrArray + CTypedPtrArray — vector counterpart to CTypedPtrMap.
@@ -1192,6 +1538,60 @@ public:
     void RemoveAll()          { m_list.clear(); }
     T &  GetHead()            { return m_list.front(); }
     T &  GetTail()            { return m_list.back(); }
+
+    // POSITION-walk subset. MFC's POSITION is an opaque token; we use
+    // a list iterator cast to void*. The standard MFC pattern is:
+    //   POSITION pos = list.GetHeadPosition();
+    //   while (pos) { T item = list.GetNext(pos); ... }
+    // GetNext returns the value AT pos and advances pos (or sets it to
+    // NULL when past the end).
+    POSITION GetHeadPosition() {
+        return m_list.empty() ? nullptr : posFromIter(m_list.begin());
+    }
+    POSITION GetTailPosition() {
+        if (m_list.empty()) return nullptr;
+        auto it = m_list.end(); --it;
+        return posFromIter(it);
+    }
+    T & GetAt(POSITION pos) { return **static_cast<iter_t *>(pos); }
+    const T & GetAt(POSITION pos) const { return **static_cast<iter_t *>(pos); }
+    T & GetNext(POSITION & rPos) {
+        auto * pIter = static_cast<iter_t *>(rPos);
+        T & ref = **pIter; ++(*pIter);
+        if (*pIter == m_list.end()) {
+            delete pIter; rPos = nullptr;
+        }
+        return ref;
+    }
+    T & GetPrev(POSITION & rPos) {
+        auto * pIter = static_cast<iter_t *>(rPos);
+        T & ref = **pIter;
+        if (*pIter == m_list.begin()) {
+            delete pIter; rPos = nullptr;
+        } else {
+            --(*pIter);
+        }
+        return ref;
+    }
+    void RemoveAt(POSITION pos) {
+        auto * pIter = static_cast<iter_t *>(pos);
+        m_list.erase(*pIter);
+        delete pIter;
+    }
+
+private:
+    // POSITION encoding: pointer to a heap-allocated iterator copy.
+    // GetNext/GetPrev free the heap object when advancing past the end.
+    // Heavier than upstream MFC (which hands out node pointers), but
+    // stays inside std::list's ABI and matches the iteration patterns
+    // the KEEP files use. NOTE: if the caller breaks out of a loop
+    // mid-walk without exhausting, the iter object leaks — acceptable
+    // for the compile-only KEEP+SHIM path; revisit when these files
+    // get linked into a real binary.
+    using iter_t = typename list_t::iterator;
+    POSITION posFromIter(iter_t it) {
+        return new iter_t(it);
+    }
 };
 
 template <typename T>
@@ -1209,7 +1609,8 @@ class CPtrList : public CObject {};
 template <class BASE_CLASS, class T>
 class CTypedPtrList : public BASE_CLASS {
 public:
-    std::list<T> m_list;
+    using list_t = std::list<T>;
+    list_t m_list;
     int  GetCount() const     { return static_cast<int>(m_list.size()); }
     BOOL IsEmpty()  const     { return m_list.empty() ? TRUE : FALSE; }
     void AddHead(const T & v) { m_list.push_front(v); }
@@ -1219,6 +1620,42 @@ public:
     void RemoveAll()          { m_list.clear(); }
     T &  GetHead()            { return m_list.front(); }
     T &  GetTail()            { return m_list.back(); }
+
+    // POSITION-walk subset — same encoding as CList. See CList for the
+    // memory-management caveat.
+    using iter_t = typename list_t::iterator;
+    POSITION GetHeadPosition() {
+        return m_list.empty() ? nullptr : new iter_t(m_list.begin());
+    }
+    POSITION GetTailPosition() {
+        if (m_list.empty()) return nullptr;
+        auto it = m_list.end(); --it;
+        return new iter_t(it);
+    }
+    T & GetAt(POSITION pos) { return **static_cast<iter_t *>(pos); }
+    T & GetNext(POSITION & rPos) {
+        auto * pIter = static_cast<iter_t *>(rPos);
+        T & ref = **pIter; ++(*pIter);
+        if (*pIter == m_list.end()) {
+            delete pIter; rPos = nullptr;
+        }
+        return ref;
+    }
+    T & GetPrev(POSITION & rPos) {
+        auto * pIter = static_cast<iter_t *>(rPos);
+        T & ref = **pIter;
+        if (*pIter == m_list.begin()) {
+            delete pIter; rPos = nullptr;
+        } else {
+            --(*pIter);
+        }
+        return ref;
+    }
+    void RemoveAt(POSITION pos) {
+        auto * pIter = static_cast<iter_t *>(pos);
+        m_list.erase(*pIter);
+        delete pIter;
+    }
 };
 
 // CStringArray — std::vector<CString> wrapper. ~Half a dozen call
